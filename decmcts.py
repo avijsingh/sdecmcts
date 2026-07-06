@@ -209,6 +209,7 @@ class DecMCTS:
         self.max_reward = float("-inf")
 
         self.root = DecMCTSNode(init_state)
+        self._all_nodes: List[DecMCTSNode] = [self.root]
         self.t = 0
 
         # Other robots' distributions: {other_robot_id: {action_seq_tuple: prob}}
@@ -340,6 +341,7 @@ class DecMCTS:
             action = self.rng.choice(node.untried_actions)
             next_state = node.state.take_action(action)
             node = node.add_child(action, next_state)
+            self._all_nodes.append(node)
             path.append(node)
 
         # Sample other robots before rollout, as in Algorithm 2.
@@ -386,10 +388,7 @@ class DecMCTS:
     def _backprop(self, path: List[DecMCTSNode], F_t: float) -> None:
         path_ids = {id(n) for n in path}
 
-        all_nodes: List[DecMCTSNode] = []
-        self._collect_nodes(self.root, all_nodes)
-
-        for node in all_nodes:
+        for node in self._all_nodes:
             on_path = id(node) in path_ids
             if on_path:
                 node.visits += 1

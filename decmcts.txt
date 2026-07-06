@@ -1,0 +1,2554 @@
+Article
+Dec-MCTS: Decentralized planning for
+multi-robot active perception
+The International Journal of
+Robotics Research
+2019, V ol. 38(2-3) 316–337
+© The Author(s) 2018
+Article reuse guidelines:
+sagepub.com/journals-permissions
+DOI: 10.1177/0278364918755924
+journals.sagepub.com/home/ijr
+Graeme Best1, Oliver M Cliff 1, Timothy Patten1,2, Ramgopal R Mettu 3
+and Robert Fitch 1,4
+Abstract
+W e propose a decentralized variant of Monte Carlo tree search (MCTS) that is suitable for a variety of tasks in multi-robot
+active perception. Our algorithm allows each robot to optimize its own actions by maintaining a probability distribution
+over plans in the joint-action space. Robots periodically communicate a compressed form of their search trees, which
+are used to update the joint distribution using a distributed optimization approach inspired by variational methods. Our
+method admits any objective function deﬁned over robot action sequences, assumes intermittent communication, is any-
+time, and is suitable for online replanning. Our algorithm features a new MCTS tree expansion policy that is designed for
+our planning scenario. W e extend the theoretical analysis of standard MCTS to provide guarantees for convergence rates
+to the optimal payoff sequence. W e evaluate the performance of our method for generalized team orienteering and online
+active object recognition using real data, and show that it compares favorably to centralized MCTS even with severely
+degraded communication. These examples demonstrate the suitability of our algorithm for real-world active perception
+with multiple robots.
+Keywords
+Decentralized Monte Carlo tree search, multi-robot systems, decentralized planning, active perception, variational methods
+1. Introduction
+Information gathering is an important family of problems in
+robotics that plays a primary role in a wide variety of tasks,
+including scene understanding (Fäulhammer et al., 2017),
+manipulation (Kahn et al., 2015), environmental monitor-
+ing (Dunbabin and Marques, 2012), and target localization
+(Cliff et al., 2015). Although the idea of exploiting robot
+motion to improve the quality of information gathering has
+been studied for nearly three decades (Bajcsy, 1988; Bajcsy
+et al., 2017), most real robot systems today (both single and
+multi-robot) still gather information passively. The motiva-
+tion for an active approach is that sensor data quality (and,
+hence, perception quality) relies critically on an appropri-
+ate choice of viewpoints (Patten et al., 2016). One way to
+efﬁciently achieve an improved set of viewpoints is through
+teams of robots, where concurrency allows for scaling up
+the number of observations in time and space. The key chal-
+lenge, however, is to coordinate the behavior of robots as
+they actively gather information. Ideally, this coordination
+should be decentralized so that the system is scalable and
+robust to failures. This paper presents an online, decentral-
+ized planning algorithm for active perception that allows a
+team of robots to perform complex information gathering
+tasks
+using physically feasible sensor and motion models,
+and reasonable communication assumptions.
+Monte Carlo tree search (MCTS) is a promising approach
+for online planning because it efﬁciently searches over long
+planning horizons and is anytime (Browne et al., 2012; Koc-
+sis and Szepesvári, 2006). MCTS is applicable to general
+problem formulations but can readily incorporate problem-
+speciﬁc heuristics. Recently, MCTS has been successfully
+applied to robotics scenarios such as active object recog-
+nition (Patten et al., 2017), wildlife monitoring (Hefferan
+et al., 2016), and planetary exploration (Arora et al., 2017).
+These studies were for single-robot problems, whereas in
+this paper we propose a new planning algorithm that is
+1Australian Centre for Field Robotics (ACFR), The University of Sydney,
+Sydney, Australia
+2Automation and Control Institute, Vienna University of T echnology,
+Vienna, Austria
+3Department of Computer Science, Tulane University, New Orleans, LA,
+USA
+4Centre for Autonomous Systems, University of T echnology Sydney,
+Sydney, Australia
+Corresponding author:
+Graeme Best, Australian Centre for Field Robotics (ACFR), J04, The Uni-
+versity of Sydney, NSW , 2006, Australia.
+Email: g.best@acfr.usyd.edu.au
+
+Best et al. 317
+a viable solution for all of these scenarios extended to
+multi-robot teams.
+In this paper we propose a new decentralized planning
+algorithm, Dec-MCTS, that is essentially a novel decen-
+tralized variant of MCTS. At a high level, our method
+alternates between exploring each robot’ s individual action
+space and optimizing a probability distribution over the
+joint-action space. In any particular round, we ﬁrst use a
+new variant of MCTS to ﬁnd locally favorable sequences
+of actions for each robot given probabilistic estimates of
+other robots’ actions that evolve during planning time. The
+main novelty is our new tree expansion policy, motivated
+by discounted upper conﬁdence bound (D-UCB) (Garivier
+and Moulines, 2011), that accounts in general for changing
+reward distributions.
+Then, robots periodically attempt to asynchronously
+communicate a highly compressed version of their local
+search trees that, together, correspond to a product distri-
+bution approximation. These communicated distributions
+are used to estimate the underlying joint distribution for
+the teams’ plan. The estimates are probabilistic, unlike the
+deterministic representation of joint actions typically used
+in multi-robot coordination algorithms. Optimizing a prod-
+uct distribution is similar in spirit to the mean-ﬁeld approx-
+imation from variational inference, and also has a natural
+game-theoretic interpretation (Rezek et al., 2008; W olpert
+and Bieniawski, 2004).
+Our algorithm is a powerful new method of decentral-
+ized coordination for any objective function deﬁned over
+the robot action sequences. Notably, this implies that our
+method is suitable for complex perception tasks such as
+object classiﬁcation, which is known to be highly dependent
+on the viewpoint (Patten et al., 2016). Further, communica-
+tion is assumed to be intermittent, and the amount of data
+sent over the network is small in comparison with the raw
+data generated by typical range sensors and cameras. Our
+method also inherits important properties from MCTS, such
+as the ability to compute anytime solutions and to incorpo-
+rate prior knowledge about the environment. Moreover, our
+method is suitable for online replanning to adapt to changes
+in the objective function or team behavior.
+W e provide an extensive theoretical analysis of the algo-
+rithm that leverages results from probability theory and
+game theory. Our main analytical result is to show conver-
+gence rates for the expected payoff at the root of the search
+tree towards the optimal payoff sequence. Thus, the pro-
+posed MCTS tree expansion policy balances exploration
+and exploitation while the reward distributions are chang-
+ing. This result is proven by extending the MCTS analysis
+of Kocsis et al. (2006) for the context of switching bandit
+problems (Garivier and Moulines, 2011). Our second ana-
+lytical result leverages the work of W olpert et al. (2006)
+to show that the product distribution optimization phase
+locally minimizes the Kullback–Leibler (KL) divergence to
+the optimal joint probability distribution. Although, given
+the difﬁculty of the problem, these results do not directly
+yield guarantees for global optimality, the analysis pro-
+vides strong motivation for the use of these components in
+our algorithm for decentralized, long-horizon planning with
+general objective function deﬁnitions.
+W e empirically evaluate our algorithm in two scenarios:
+generalized team orienteering and active object recognition.
+These experiments are run in simulation, where the robots
+traverse a probabilistic roadmap (PRM) with a Dubins
+motion model, and the second scenario uses range sensor
+data collected a priori by real robots. W e show that our
+decentralized approach performs as well as or better than
+centralized MCTS even with a signiﬁcant rate of commu-
+nication message loss. W e also show the beneﬁts of our
+algorithm in performing long-horizon and online planning.
+1.1. Contributions
+In this paper we propose a new multi-robot planning algo-
+rithm that is decentralized, admits a general class of objec-
+tive functions, optimizes actions over a long planning hori-
+zon, is anytime, robust to communication degradation,
+and is suitable for online replanning. The algorithm is a
+novel decentralized variant of MCTS, which features a new
+tree expansion policy suitable for our context, and com-
+bines MCTS with a probabilistic distributed optimization
+approach inspired by variational methods. W e provide a
+theoretical analysis and empirical results that demonstrate
+the suitability of our planning algorithm for coordinated
+information-gathering tasks.
+This paper is an extended and revised version of Best
+et al. (2016) presented at W AFR 2016. The main new con-
+tribution is a theoretical analysis of the key MCTS com-
+ponent of our algorithm by relating it to a new multi-armed
+bandit (MAB) problem. In addition, we provide an extended
+review of related literature, expanded algorithmic details,
+a discussion of generalizations for probabilistic objectives,
+and implementation details.
+The remainder of this paper is organized as follows. Sec-
+tion 2 discusses related work in decentralized planning,
+MCTS, variational methods, and non-myopic planning.
+Section 3 deﬁnes the decentralized planning problem. Sec-
+tion 4 presents our proposed Dec-MCTS algorithm. Sec-
+tion 5 provides a theoretical analysis of Dec-MCTS, with
+proofs of intermediate results provided in the Appendix.
+Sections 6 and 7 present an empirical analysis of our algo-
+rithm for two example active perception problems. Finally,
+Section 8 concludes the paper and discusses future work.
+2. Related work
+2.1. Decentralized information gathering
+Information-gathering problems can be viewed as sequen-
+tial decision processes in which actions are chosen to max-
+imize an objective function. The computational burden of
+decentralized coordination is typically overcome by using
+myopic solvers which maximize the objective function over
+318 The International Journal of Robotics Research 38(2-3)
+a limited time horizon (Xu et al., 2013; Gan et al., 2014).
+Unfortunately, the quality of solutions produced by myopic
+methods can be arbitrarily poor in general. Recently, how-
+ever, analysis of submodularity (Nemhauser et al., 1978)
+has shown that myopic methods can achieve near-optimal
+performance (Krause et al., 2008), which has led to consid-
+erable interest in their application to information gathering
+with multiple robots (Garg and Ayanian, 2014; Hollinger
+et al., 2009; Patten et al., 2013; Singh et al., 2009). Whereas
+these greedy methods provide theoretical guarantees, they
+require a submodular objective function, which is not appli-
+cable in all cases. In addition, whereas these methods often
+guarantee lower bounds on optimality, the solution quality
+can typically be improved by planning over longer horizons.
+Similarly, for simpliﬁed problems that only require select-
+ing one action per robot rather than sequences of actions,
+decentralized task allocation approaches are often sufﬁcient
+(Liu et al., 2015).
+Efﬁcient non-myopic decentralized coordination algo-
+rithms can be designed by exploiting problem-speciﬁc
+characteristics. Market-based methods (Dias et al., 2006)
+involve each robot negotiating over which tasks it will per-
+form, and are more appropriate for coverage and explo-
+ration problems (Zlot et al., 2002). Sadeghi and Smith
+(2017) applied an auction method with traveling salesman
+problem (TSP) heuristics to a problem formulated as a gen-
+eralization of the TSP . Stranders et al. (2009) combined
+max-sum message passing with branch and bound pruning
+to ﬁnd sequences of viewpoints that minimize the entropy
+of a Gaussian process. Otte and Correll (2013) proposed a
+distributed rapidly exploring random tree (RRT) algorithm
+for coordinated path planning with collision avoidance.
+The authors demonstrated a graceful degradation of per-
+formance as communication becomes less reliable, and we
+observe a similar behavior with our Dec-MCTS algorithm.
+Corah and Michael (2017) proposed a distributed sequential
+greedy assignment algorithm for multi-robot exploration,
+and provided performance guarantees by exploiting a sub-
+modularity assumption. Atanasov et al. (2015) propose a
+decentralized algorithm for tracking targets that have lin-
+ear Gaussian dynamics, such as for active simultaneous
+localization and mapping (SLAM). Our proposed algorithm
+is applicable to a general class of problems since it does
+not rely on speciﬁc assumptions about the problem; how-
+ever, our approach can readily incorporate problem-speciﬁc
+approximate solutions, such as those above, as heuristics to
+guide the search.
+2.2. Dec-POMDPs
+Decentralized active information gathering can be viewed,
+in general, as a partially observable Markov decision
+process (POMDP) in decentralized form (Dec-POMDP)
+(Bernstein et al., 2002; Oliehoek and Amato, 2016). T yp-
+ically, Dec-POMDP formulations are solved by perform-
+ing centralized, ofﬂine planning over the joint multi-agent
+policy space, and then these policies are executed online
+in a decentralized fashion (Amato, 2015; Kumar et al.,
+2015; Oliehoek and Amato, 2016; Omidshaﬁei et al., 2017).
+These centralized, ofﬂine planning approaches are imprac-
+tical in scenarios with large sources of uncertainty, such
+as when the state of the environment is unknown ahead of
+time.
+In contrast, Spaan et al. (2006) addressed a Dec-POMDP
+problem setting where both planning and execution are per-
+formed in a decentralized manner; we solve our problem
+in a similar decentralized setting such that computation is
+performed online and on-board the team of robots. Spaan
+et al. (2006) proposed a general Dec-POMDP solver where
+each agent solves a single-agent POMDP , shares informa-
+tion about its own plan, then repeats. At a high level, our
+algorithm is similar to this general approach, but we dif-
+fer in how we share information, and we propose solving
+the single-agent subproblems with an anytime, incremental
+planner that can account for changing information about the
+teams’ plan in a principled manner.
+While the problem deﬁnition we consider in this paper is
+not formulated as a Dec-POMDP in general form, extended
+algorithms for the Dec-POMDP case could be designed by
+using partially observable Monte Carlo planning (POMCP)
+(Silver and V eness, 2010).
+2.3. MCTS
+MCTS has recently become popular for online planning
+in robotics. MCTS has been proposed in many different
+forms (Browne et al., 2012), but by far the most common is
+the upper-conﬁdence bounds applied to trees (UCT) algo-
+rithm (Kocsis and Szepesvári, 2006; Kocsis et al., 2006).
+The UCT algorithm performs an asymmetric expansion of
+a search tree using a best-ﬁrst policy that generalizes the
+UCB1 policy for MAB problems (Auer et al., 2002). This
+expansion policy provides theoretical guarantees for a poly-
+nomial bound on regret and therefore is said to balance
+between exploration and exploitation. Several variants to
+UCT have been proposed, such as for exploiting smoothness
+of the reward function (Coquelin and Munos, 2007). A key
+component of our proposed Dec-MCTS algorithm is a novel
+UCT variant, D-UCT, that accounts for a changing reward
+distribution by using a new expansion policy that gener-
+alizes the D-UCB policy for switching bandit problems
+(Garivier and Moulines, 2011). MCTS algorithms have also
+been extended for problems with partial-observability, such
+as the POMCP (Silver and V eness, 2010) and DESPOT
+(Somani et al., 2013) algorithms, and Dec-MCTS could be
+extended in a similar way. However, MCTS has not yet been
+extended for decentralized multi-agent planning, which is
+the focus of this paper.
+MCTS is parallelizable (Chaslot et al., 2008), and vari-
+ous techniques have been proposed that split the search tree
+across multiple processors and combine their results. In the
+multi-robot case, the joint search tree interleaves actions of
+Best et al. 319
+individual robots and it remains a challenge to effectively
+partition this tree. Auger (2011) addressed the related case
+of multi-player games, where a separate tree is maintained
+for each player; however, a single simulation traverses all
+of the trees and therefore this approach would be difﬁ-
+cult to decentralize. W e propose a similar approach, except
+that each robot performs independent simulations while
+sampling from a locally stored probability distribution that
+represents the other robots’ action sequences.
+MCTS has been applied to a wide variety of single-robot
+tasks, including active object recognition (Lauri et al., 2015;
+Patten et al., 2017), patrolling environments with adver-
+sarial agents (Hefferan et al., 2016; Kartal et al., 2015),
+information gathering by a glider in thermal wind ﬁelds
+(Nguyen et al., 2015), environment exploration (Corah and
+Michael, 2017; Lauri and Ritala, 2016), autonomous sci-
+ence by planetary rovers (Arora et al., 2017), active param-
+eter estimation for manipulation (Slade et al., 2017), and
+monitoring of a spatiotemporal process (Marchant et al.,
+2014). W e propose a decentralized MCTS algorithm that
+is suitable for multi-robot generalizations of all of these
+problems. So far, MCTS has been less frequently studied
+in multi-robot scenarios, though promising ideas have been
+presented by Kartal et al. (2015) for centralized planning
+of a team of patrolling robots, and by Corah and Michael
+(2017) as a single-robot planner within a distributed multi-
+robot assignment algorithm for the context of exploration
+and mapping.
+2.4. V ariational methods for planning
+Coordination between robots is achieved in our method by
+combining MCTS with a framework that optimizes a prod-
+uct distribution over the joint action space in a decentralized
+manner. Our approach is analogous to the classic mean-ﬁeld
+approximation and related variational methods (Koller and
+Friedman, 2009; Rezek et al., 2008; Y edidia et al., 2005).
+Other graphical model inference techniques, alternative to
+variational methods, have motivated related coordination
+algorithms (Kumar et al., 2015; Regev and Indelman, 2016;
+Stranders et al., 2009).
+V ariational methods seek to approximate the underlying
+global likelihood with a collection of structurally simpler
+distributions that can be evaluated efﬁciently and indepen-
+dently. These methods characterize convergence based on
+the choice of product distribution, and work best when it
+is possible to strike a balance between the convergence
+properties of the product distribution and the KL diver-
+gence between the product and joint distributions. As dis-
+cussed in the body of work on probability collectives (PC)
+(W olpert and Bieniawski, 2004; W olpert et al., 2006, 2013),
+such variational methods can also be viewed under a game-
+theoretic interpretation, where the goal is to optimize each
+agent’ s action selection based on examples of the global
+reward/utility function.
+PC has been applied to robotics problems, but so far
+has been limited to selecting a single action from a small
+action space (Waldock and Nicholson, 2007), rather than
+planning sequences of actions. An exception to this is the
+work of Kulkarni and Tai (2010), who combined PC with
+TSP heuristics to solve the multiple-TSP in a decentralized
+manner. W e propose a similar approach to Kulkarni and Tai
+(2010), but instead we leverage the long-horizon planning
+of MCTS to dynamically select an effective and compact
+sample space of action sequences.
+2.5. Non-myopic, single-robot planning
+Long-horizon planning is also beneﬁcial for single-robot
+information gathering. As discussed in Section 2.3, MCTS
+approaches have recently gained popularity. Branch and
+bound tree search (Binney and Sukhatme, 2012; Best
+and Fitch, 2016) is closely related to MCTS but requires
+problem-speciﬁc bounds with hard guarantees; in contrast,
+UCT relies on generally applicable probabilistic bounds
+derived from the Chernoff–Hoeffding inequality. Active
+perception problems have also been formulated as TSP vari-
+ants (Best et al., 2018; Charrow, 2015; Y u et al., 2016).
+A sampling-based planner has been proposed for explo-
+ration and inspection tasks (Bircher et al., 2016). Exten-
+sions of RRT have been designed for problems where the
+environment is naturally modeled as a continuous process
+(Hollinger and Sukhatme, 2014), e.g. Gaussian processes.
+Hollinger (2015) extends the RRT approach to be more suit-
+able for real-time planning. In exploration scenarios, imi-
+tation learning can be used for planning by learning from
+examples that have assumed full knowledge of the world
+(Choudhury et al., 2017). For active object recognition, a
+primary motivating scenario for Dec-MCTS, planning has
+typically been limited to greedy approaches (Huber et al.,
+2012; van Hoof et al., 2014; Wu et al., 2015); MCTS
+approaches are notable exceptions (Lauri et al., 2015; Patten
+et al., 2017).
+3. Problem statement
+W e consider a team of R robots {1, 2,... , R}, where each
+robot r plans its own sequence of future actions xr =
+( xr
+1, xr
+2,... ). Each action xr
+j has an associated cost cr
+j and
+each robot has a cost budget Br such that the sum of the
+costs must be less than the budget, i.e. ∑
+xr
+j ∈xr cr
+j ≤ Br.
+This cost budget may be an energy or time constraint
+deﬁned by the application, or it may be used to enforce
+a planning horizon. The feasible set of actions and asso-
+ciated costs at each step j are a function of the previous
+actions ( x
+r
+1, xr
+2,... , xr
+j− 1). Thus, there is a predeﬁned set
+X r of feasible action sequences xr for each robot r.W e
+use x to denote the set of action sequences for all robots
+x :={ x1, x2,... , xR} and x(r) to denote the set of action
+sequences for all robots except robot r, i.e. x(r) := x \ xr.
+320 The International Journal of Robotics Research 38(2-3)
+We u s eX to denote the set of all feasible x and X (r) to
+denote the set of all feasible x(r).
+The aim is to maximize a global objective function g( x)
+that is a function of the action sequences of all robots. W e
+assume each robot r knows the global objective function g,
+but does not know the action sequences x(r) selected by the
+other robots. For most of our proposed approach, we assume
+g is deterministic given a known set of action sequences
+x; in Section 4.7 we discuss extensions for probabilistic
+objective functions.
+The problem must be solved in a decentralized and online
+setting. W e assume that robots can communicate during
+planning time to improve coordination. The communica-
+tion channel may be unpredictable and intermittent, and
+all communication is asynchronous. Therefore, each robot
+will plan based on the information it has available locally.
+Bandwidth may be constrained and therefore message sizes
+should remain small, even as the plans grow. Although we
+do not consider explicitly planning to maintain commu-
+nication connectivity, this may be encoded in the objec-
+tive function g( x) if a reliable communication model is
+available.
+4. Dec-MCTS
+In this section, we present our Dec-MCTS algorithm as a
+decentralized solution to the general multi-robot planning
+problem. W e ﬁrst provide an overview of the algorithm
+followed by a detailed explanation of all components.
+4.1. Algorithm overview
+Dec-MCTS runs simultaneously and asynchronously on all
+robots; we present the algorithm from the perspective of
+robot r. The algorithm cycles between the three phases illus-
+trated in Figure 1: (1) incrementally grow a search tree
+using MCTS while taking into account information about
+the other robots’ plans; (2) update the probability distri-
+bution over possible action sequences; and (3) communi-
+cate probability distributions with the other robots. These
+three phases continue regardless of whether or not the com-
+munication was successful, until a computation budget is
+met.
+A key idea of Dec-MCTS is to represent and reason over
+plans in a probabilistic manner. In particular, robot r’ s cur-
+rent plan is represented by a probability distribution over
+action sequences. W e deﬁne a probability mass function q
+r
+n,
+such that qr
+n( xr) deﬁnes the probability that robot r will
+select the action sequence xr. In general, the domain of the
+distribution qr
+n is the set of all possible action sequences X r.
+However, to enable tractable computation and realistic com-
+munication, we restrict the domain of qr
+n to a dynamically
+selected subset ˆX r
+n ⊂ X r, i.e. qr
+n( xr) = 0,∀xr /∈ ˆX r
+n .A st h e
+Dec-MCTS algorithm progresses, both the domain ˆX r
+n and
+the probability distribution qr
+n are optimized. Note the sub-
+script n for qr
+n and ˆX r
+n is used to denote the nth iteration of
+the main loop of our algorithm.
+An illustration of the main loop is shown in Figure 1 and
+pseudocode for the algorithm is provided in Algorithm 1.
+During the MCTS phase, a search tree T r is grown over
+the space X r of robot r’ s action sequences using a new
+variant of the UCT algorithm. This tree growth is per-
+formed while considering the probability distributions over
+the other robots plans, denoted ˆX (r)
+n , q(r)
+n . Periodically, the
+domain ˆX r
+n for robot r’ s distribution is updated by selecting
+the most promising action sequences identiﬁed by the tree
+search. In the probability distribution optimization phase,
+the probabilities assigned to action sequences q
+r
+n( xr)a r e
+optimized using a decentralized gradient descent algorithm
+while considering the distributions of the other robots. In
+the communication phase, robot r communicates its domain
+ˆX
+r
+n and probability distribution qr
+n to the other robots. If
+robot r receives a new distribution from any of the other
+robots, then in the next iteration ˆX r
+n and qr
+n are optimized
+while considering this new information. During this opti-
+mization process, it is possible that q(r)
+n will change such
+that a previously optimal leaf of the tree T r becomes sub-
+optimal; we refer to the times at which this happens as
+breakpoints.
+When the computation budget is met, the algorithm
+returns the action sequence xr that has the highest probabil-
+ity qr
+n( xr). In online settings, the robot would then typically
+execute the ﬁrst action xr
+1 in the action sequence, and then
+perform replanning to take into account new information
+received by observations. If the changes to the objective
+function are minor, then replanning may be performed more
+efﬁciently by adapting the previous search tree.
+4.2. Local utility function
+The global objective function g is optimized by each robot
+r using a local utility function f r. W e deﬁne f r as the
+difference in global utility between robot r performing
+action sequence xr and a default “no reward” sequence xr
+∅,
+assuming ﬁxed action sequences x(r) for the other robots,
+i.e.
+f r( x) := g( xr ∪ x(r)) − g( xr
+∅ ∪ x(r))( 1 )
+The default sequence xr
+∅ is chosen to be suitable for
+the application and would typically be an empty action
+sequence. In practice, optimizing with respect to f r rather
+than g improves the performance since f r is more sensitive
+to robot r’ s plan and the variance of f r is less affected by
+the uncertainty of the other robots’ plans (W olpert et al.,
+2013). W e chose this local utility function since it is gen-
+erally applicable, although further performance improve-
+ments could be achieved with problem-speciﬁc heuristics
+(Rahmattalabi et al., 2016). W e note that this formulation
+assumes that all robots know the global utility function
+g. However, if instead each robot only has access to a
+Best et al. 321
+Algorithm 1 Overview of Dec-MCTS for robot r.
+input: global objective function g, budget Br, feasible action sequences and costs
+output: sequence of actions xr for robot r
+1: T r ← initialize MCTS tree
+2: while computation budget not met, at iteration n do
+3: ˆX r
+n ← SELECT SETOFSEQUENCES ( T r) ⊿ See Section 4.4
+4: for τn iterations do
+5: T r ← GROWTREE ( T r, ˆX (r)
+n , q(r)
+n , Br) ⊿ See Algorithm 2 and Section 4.3
+6: qr
+n ← UPDA TEDISTRIBUTION ( ˆX r
+n , qr
+n
+, ˆX (r)
+n , q(r)
+n ,β) ⊿ See Algorithm 3 and Section 4.4
+7: COMMUNICA TION TRANSMIT ( ˆX r
+n , qr
+n
+) ⊿ See Section 4.5
+8: ( ˆX (r)
+n , q(r)
+n ) ← COMMUNICA TION RECEIVE ⊿ See Section 4.5
+9: β ← COOL ( β) ⊿ See Section 4.4
+10: return xr ← arg maxxr∈ ˆX rn
+[
+qr
+n
+( xr)
+]
+Fig. 1. Overview of the algorithm running on-board robot r. (1) The search tree is expanded by adding new actions (green). Periodically,
+the set of best nodes (orange) is selected as the domain ˆX rn . (2) The probability distribution qrn is optimized (from dotted red to solid
+blue). (3) If possible, the domains and distributions are communicated between robots.
+local estimate of g then our proposed algorithm will opti-
+mize the action sequences with respect to this inconsistent
+information.
+4.3. MCTS with D-UCB
+The ﬁrst phase of the algorithm is the MCTS update shown
+in Algorithm 2. A single search tree T
+r is maintained by
+robot r that only contains the actions of robot r. The tree
+T r is deﬁned such that each edge in the tree represents
+an action by robot r, and a path from the root node i0
+to another node id at depth d represents a valid sequence
+of actions by robot r. The MCTS algorithm incrementally
+grows T r from the root node using a best-ﬁrst expansion
+policy. During the MCTS phase, coordination with other
+robots occurs implicitly by considering the plans of the
+other robots when performing the rollout policy and evalua-
+tion of the global objective function. This information about
+the other robots’ plans comes from the second phase of
+the algorithm, detailed later in Section 4.4. In this section,
+we detail our proposed MCTS algorithm which features a
+novel bandit-based node selection policy designed for our
+planning scenario.
+Standard
+MCTS incrementally grows a tree by iterat-
+ing through four phases: selection, expansion, simulation,
+and backpropagation (Browne et al., 2012). During each
+iteration t, a new leaf node is added, where each node repre-
+sents a sequence of actions and contains statistics about the
+expected reward of all action sequences that begin with this
+sequence.
+The selection phase (Algorithm 2, line 3) selects an
+expandable node in the tree, where an expandable node is
+deﬁned as a node that has at least one child that has not yet
+been visited during the search. In order to ﬁnd an expand-
+able node, the algorithm begins at the root node i
+0 of the
+tree and recursively selects child nodes until an expandable
+node i
+d− 1 is reached. For selecting the next child at each
+level of the tree, we propose an extension of the UCT pol-
+icy (Kocsis and Szepesvári, 2006), detailed in Section 4.3.1,
+to balance exploration and exploitation. In the expansion
+phase (Algorithm 2, line 4), a new child node i
+d is added
+to the selected expandable node id− 1, which extends the
+parent’ s action sequence with an additional action.
+In the simulation phase (Algorithm 2, lines 5–7), the
+expected utility E[g] of the expanded node id is estimated
+by performing and evaluating a rollout policy that extends
+the action sequence represented by the node until a terminal
+322 The International Journal of Robotics Research 38(2-3)
+Algorithm 2 Grow the search tree for robot r using MCTS.
+1: function GROWTREE (T r, ˆX (r)
+n , q(r)
+n , Br)
+input: partial tree T r, distributions for other robots ( ˆX (r)
+n , q(r)
+n ), budget Br
+output: updated partial tree T r
+2: for ﬁxed number of samples do
+3: id− 1 ← NODE SELECTION D-UCT( T r) ⊿ Select node to expand using D-UCT policy (Section 4.3.1)
+4: id ← EXP ANDTREE ( id− 1) ⊿ Add new child to node id− 1
+5: x(r) ← SAMPLE ( ˆX (r)
+n , q(r)
+n ) ⊿ Sample action sequences of other robots
+6: xr ← PERFORM ROLLOUT POLICY ( id , x(r), Br) ⊿ Default policy until budget exhausted
+7: Ft ← f r( xr ∪ x(r)) ⊿ Local utility function (Section 4.2)
+8: T r ← BACKPROP AGA TION( T r, id , Ft) ⊿ Update statistics in tree
+9: return T r
+state is reached. This rollout policy could be a random pol-
+icy or a heuristic for the problem (James et al., 2017). The
+objective is evaluated for this sequence of actions and this
+result is saved.
+For our problem, the objective is a function of the action
+sequence x
+r as well as the unknown plans of the other robots
+x(r), and thus we require an extension of the standard sim-
+ulation procedure. To compute the rollout score, we ﬁrst
+sample x(r) from a probability distribution q(r)
+n over the plans
+of the other robots (as deﬁned in Section 4.1). A heuris-
+tic rollout policy extended from id deﬁnes xr, which should
+be a function of x(r) to simulate coordination between the
+robots. In addition, we optimize xr using the local utility f r
+(as deﬁned in (1)) rather than g. The rollout score is com-
+puted as the utility of this joint sample f r( xr ∪ x(r)), which
+is an estimate for Eqn [ f r | xr]. W e denote Ft as the rollout
+evaluation at sample round t.
+In the backpropagation phase (Algorithm 2, line 8), the
+rollout evaluation Ft is added to the statistics of all nodes
+along the path from the expanded node back to the root of
+the tree. T ypically, these statistics are unbiased estimators
+of the rollout evaluations; however, as we discuss in the fol-
+lowing section, it is more suitable to use a weighted average
+in the context of Algorithm 1.
+4.3.1. D-UCB node selection policy. The node selection
+policy is used in Algorithm 2, line 3, and dictates the order
+in which the tree T
+r is expanded. Consider an arbitrary
+node id at depth d in the tree which has an associated set
+of child nodes C( id ). For every sample round t where node
+id is visited, the problem is to select a child Iid ,t ∈ C( id )
+that balances both visiting promising subtrees and exploring
+uncertain ones.
+An established approach for node selection is based on
+maintaining an upper conﬁdence bound (UCB) on the value
+of each node. Under this paradigm, at each sample round t,
+aU C B Uj,tid ,tj is computed for all children j ∈ C( id )o ft h e
+parent node id . Here, tid is the number of times the parent
+node id has been visited and tj is the number of times child
+node j has been visited. The algorithm then selects the node
+that maximizes this quantity, i.e.
+Iid ,t = arg max
+j∈C(id )
+Uj,tid ,tj (2)
+This continues recursively until an expandable node is
+reached.
+T h ed ef a c t oU C BUj,tid ,tj is a combination of the empir-
+ical mean of rewards received at node j and a conﬁdence
+interval derived from the Chernoff–Hoeffding inequality
+(Browne et al., 2012). This bound was originally used in
+the context of the MAB problem and called UCB1 (Auer
+et al., 2002); when used for tree search, it is labeled UCT
+(Kocsis and Szepesvári, 2006). UCT was shown to yield
+polynomial regret when the reward distributions at the leaf
+nodes are stationary (Kocsis and Szepesvári, 2006). How-
+ever, Algorithm 1 alternates between growing the tree for
+a number of rollouts τ
+n and updating the probability distri-
+butions for other robots. As mentioned in Section 4.1, this
+introduces breakpoints as instants where the reward distri-
+bution and optimal action can change abruptly. W e denote
+the number of breakpoints up until time t as ϒt. Owing to
+these breakpoints, the most recent rollouts are more relevant
+since they are obtained by sampling the most recent dis-
+tributions. It was shown by Garivier and Moulines (2011)
+that UCB1 is inefﬁcient in the bandit setting when break-
+points are expected. In this scenario a discounted variant,
+termed D-UCB, yields tighter bounds on regret. Owing to
+the expected breakpoints caused by updating the distribu-
+tions, we extend the approach of Garivier and Moulines
+(2011) for tree search, and propose a discounted variant of
+UCT for node selection, which we term D-UCT, described
+as follows.
+Given some discount factor γ ∈(1/2, 1) and exploration
+constant C
+p > 1/
+√
+8, the D-UCT bound is deﬁned as
+Uj,tid ,tj ( γ) := ¯Fj,tj ( γ) +ctid ,tj ( γ)( 3 )
+where ¯Fj,tj ( γ) is the discounted empirical reward, and
+ctid ,tj ( γ) is a discounted exploration bonus. A lower dis-
+count factor γ enforces only the most recent rollouts to
+contribute towards the UCB, whereas at the upper limit
+γ → 1 D-UCT becomes equivalent to UCT . These quanti-
+ties are computed as follows. First, recall that the indicator
+Best et al. 323
+function 1{Iid ,t=j} returns 1 if node j was selected at round
+t, and 0 otherwise. Then, denote the discounted number of
+times the child node j has been visited as
+tj( γ) :=
+t∑
+u=1
+γt− u1{Iid ,u=j} (4)
+and the discounted number of times the parent node has
+been visited as
+tid ( γ) :=
+∑
+j∈C(id )
+tj( γ)( 5 )
+Recall that Ft is the rollout score received at sample t. Then,
+the discounted empirical average is given by
+¯Fj,tj ( γ) := 1
+tj( γ)
+t∑
+u=1
+γt− uFu1{Iid ,u=j} (6)
+and the discounted exploration bonus is deﬁned as
+ctid ,tj ( γ) := 2Cp
+√
+log tid ( γ)
+tj( γ) (7)
+The aim of an online planner, such as Dec-MCTS, is to
+ﬁnd the best ﬁrst action, execute this action, and then replan.
+Thus, we are interested in the convergence of the root node
+towards selection of the optimal action. Given the expected
+upper bound on the number of breakpoints occurring in the
+subtree rooted at node j, i.e. E[ϒ
+tj ], selecting the discounted
+factor as
+γtj = 1 −
+√
+E[ϒtj ]
+16tj
+(8)
+allows us to minimize the time for this convergence. This
+is analyzed further in Section 5. Having γ change dynami-
+cally, such as in (8), makes it difﬁcult to efﬁciently recom-
+pute ¯Fj,tj and ctid ,tj as t grows large. Therefore, in practice,
+typically it is best to set γ to a ﬁxed constant.
+4.4. Decentralized product distribution
+optimization
+The second phase of the algorithm updates a probability
+distribution qr
+n over the set of possible action sequences
+for robot r. The distribution qr
+n serves as a way of pre-
+dicting the likelihood of an action sequence being selected
+as the search tree continues to grow. These distributions
+are communicated between robots and used when perform-
+ing rollouts during future iterations of MCTS. To deﬁne
+and optimize these distributions in a decentralized manner
+for improving global utility, we adapt a type of variational
+method originally proposed by W olpert and Bieniawski
+(2004). This formulation can be viewed as a game between
+independent robots, where each robot selects its action
+sequence by sampling from a distribution. The approach to
+solving this formulation is essentially a decentralized gradi-
+ent descent method over the space of product distributions.
+Pseudocode is provided in Algorithm 3.
+One challenge is that the set of possible action sequences
+X
+r typically has a cardinality that is exponential in the time
+horizon. W e obtain a sparse representation by periodically
+selecting the sample space ˆX r
+n ⊂ X r as the most promising
+action sequences {xr
+1, xr
+2,... } found by MCTS so far (Algo-
+rithm 1, line 3). W e select a ﬁxed number of nodes in the
+search tree T r that currently have the highest discounted
+empirical average ¯F( γ). The set ˆX r
+n is chosen as the action
+sequences used during the initial rollouts when the selected
+nodes were ﬁrst expanded.
+As mentioned in Section 4.1, when the sample spaces
+ˆX (r)
+n are updated, this can introduce breakpoints in the
+reward distribution of robot r. Thus, we expect the maxi-
+mum number of breakpoints E[ϒt]t ob eg i v e nb yt h en u m -
+ber of changes to the sample spaces. To ensure convergence
+of the utility, each period τn is governed by a function of
+t such that {E[ϒt]}t is bounded from above. An example
+deﬁnition for τn is provided in Remark 2 in Section 5.
+The set ˆX r
+n has an associated probability distribution qr
+n
+such that qr
+n( xr) deﬁnes the probability that robot r will
+select xr ∈ ˆX r
+n . The distributions for different robots are
+independent and therefore they collectively deﬁne a prod-
+uct distribution qn, such that the probability pn of a joint
+action sequence selection x is
+pn( x) = qn( x) :=
+∏
+r∈{1,...,R}
+qr
+n( xr)( 9 )
+The advantage of deﬁning pn as a product distribution is so
+that each robot selects its action sequence independently,
+and therefore allows decentralized execution.
+Consider the general class of joint probability distribu-
+tions pn that are not restricted to product distributions.
+Deﬁne the expected global objective function for a joint
+distribution pn as Epn [g], and let /Gamma1be a desired value
+for Epn [g]. According to the maximum entropy principle,
+the most likely pn that satisﬁes E[g] = /Gamma1is the pn that
+maximizes entropy. The most likely pn can be found by
+minimizing the maxent Lagrangian, deﬁned as
+L( pn) := λ
+(
+/Gamma1− Epn [g]
+)
+− H( pn) (10)
+where
+H( pn) :=−
+∑
+x∈X
+pn( x)l n(pn( x)) (11)
+is the Shannon entropy and λ is a Lagrange multiplier. The
+intuition is to iteratively increase /Gamma1and optimize pn.A
+descent scheme for pn can be formulated with Newton’ s
+method.
+For decentralized planning and execution, we are inter-
+ested in optimizing the product distribution qn rather than
+a more general joint distribution pn. W e can approximate
+324 The International Journal of Robotics Research 38(2-3)
+Algorithm 3 Probability distribution optimization for robot r.
+1: function UPDA TEDISTRIBUTION ( ˆX r
+n , qr
+n, ˆX (r)
+n , q(r)
+n ,β)
+input: action sequence set for each robot ˆXn :={ ˆX 1
+n , ˆX 2
+n ,... , ˆX R
+n }
+with associated probability distributions {q1
+n, q2
+n,... , qR
+n },
+update parameter β,
+constant α (e.g. α = 0.01),
+output: updated probability distribution qr
+n for robot r
+2: for each xr ∈ ˆX r
+n do
+3: Eqn [ f r] ← ∑
+x∈ ˆXn
+[
+f r( x) ∏
+r′∈{1,...,R} qr′
+n ( xr′
+)
+]
+4: Eqn [ f r | xr] ← ∑
+x(r)∈ ˆX (r)
+n
+[
+f r( xr ∪ x(r)) ∏
+r′∈{1,...,R}\r qr′
+n ( xr′
+)
+]
+5: qr
+n( xr) ← qr
+n( xr) −αqr
+n( xr)
+[Eqn [ f r] − Eqn [ f r | xr]
+β + H( qr
+n) + ln
+(
+qr
+n( xr)
+)]
+6: qr
+n ← NORMALIZE ( qr
+n)
+7: return qr
+n
+qn by ﬁnding the qn with the minimum pq KL divergence,
+where the pq KL divergence is deﬁned as
+DKL( pn ∥ qn) :=
+∑
+x∈X
+pn( x)l n
+( pn( x)
+qn( x)
+)
+(12)
+This formulates a descent scheme with the update policy for
+qr
+n shown in Algorithm 3, line 5, where we use f r (as deﬁned
+in (1)) rather than g, and the expectations Eqn are deﬁned
+with respect to the product distribution qn. Intuitively, this
+update rule increases the probability that robot r selects xr if
+this results in an improved local utility, while also ensuring
+the entropy of qr
+n does not decrease too rapidly. The former
+behavior is controlled by the
+(
+Eqn [ f r] − Eqn [ f r | xr]
+)
+/β
+term in the update rule, while the latter behavior is con-
+trolled by H( qr
+n) + ln
+(
+qr
+n( xr)
+)
+. Parameter β speciﬁes the
+balance between these two behaviors.
+Pseudocode for this approach is in Algorithm 3. Each
+iteration of the loop beginning at line 2 updates the prob-
+ability qr
+n( xr) of performing an action sequence xr.W e
+require computing two expectations (lines 3–4) to evaluate
+the update equation (line 5). In general, to compute these
+expectations exactly it is necessary to sum over the enu-
+meration of all x ∈ ˆX
+n. It is infeasible to perform this enu-
+meration at every iteration, and therefore these expectations
+should instead be approximated using random sampling of
+ˆXn. For certain problem deﬁnitions, it may be possible to
+efﬁciently compute these expectations exactly by exploit-
+ing the structure of the problem, such as in our Section 6
+experiments.
+As the Dec-MCTS algorithm progresses, the parameter
+β should slowly decrease in order to slowly decrease the
+entropy of the probability distributions. The cooling sched-
+ule for β could be a ﬁxed rate of descent or a more elaborate
+schedule (W olpert et al., 2006). The parameter α is a ﬁxed
+step size for the gradient descent. When the sample space
+ˆX
+r
+n changes (Algorithm 1, line 3), theoretically it is possible
+to keep and update the previous distribution, i.e. qr
+n = qr
+n− 1,
+by maintaining qr
+n over the entire space X r.H o w e v e r ,i n
+practice, this is likely to become inefﬁcient as the number
+of action sequences that have ever appeared in a sample
+space grows, particularly when calculating the expectations
+and normalizing, as well as when communicating these dis-
+tributions. Instead, we suggest resetting q
+r
+n to a uniform
+distribution and β to its initial value whenever ˆX r
+n changes.
+4.5. Communication
+At each iteration of the inner-loop of Algorithm 1, robot r
+communicates its current probability distribution ( ˆX r
+n , qr
+n)
+to the other robots. If robot r receives an updated distribu-
+tion ( ˆX r′
+n , qr′
+n ) from another robot r′, then ( ˆX r′
+n , qr′
+n ) replaces
+the locally stored distribution for r′. The updated distribu-
+tion is used during the next iteration, such that both the tree
+T r and probability distribution ( ˆX r
+n , qr
+n) are updated based
+on the new ( ˆX (r)
+n , q(r)
+n ). If no new messages are received
+from a robot, then robot r continues to plan based on the
+most recent distribution. If robot r is yet to receive any
+messages then it may assume a default policy.
+4.6. Online replanning
+The best action is selected as the ﬁrst action in the highest
+probability action sequence in ˆX
+r
+n (Algorithm 1, line 10).
+The search tree may then be pruned by removing all chil-
+dren of the root except the selected action. Planning may
+then continue using the subtree’ s previous results. If the
+objective function changes, e.g. as a result of a new obser-
+vation, then the tree should be restarted. In practice, if the
+change is minor then it may be appropriate to continue plan-
+ning with the current tree, and the discounting in D-UCT
+will help to quickly correct the reward estimates.
+4.7. Probabilistic objective functions
+So far, we have assumed the objective function g is
+deterministic for a given set of action sequences x.T h i s
+Best et al. 325
+is reasonable in many scenarios since, for example, it is
+usually sufﬁcient to plan based on the expectation of the
+reward, which is a deterministic quantity. However, some-
+times it may be necessary to directly model other sources
+of uncertainty, such as the state of the environment, in addi-
+tion to the uncertain plans of the robots. For these problems,
+we can deﬁne the objective function as g( x,/Psi1), where /Psi1is
+a random variable representing other sources of uncertainty.
+Our algorithm can readily be extended to this case by com-
+puting all expectations with respect to both q
+n and /Psi1.I n
+some cases these expectations could be computed exactly
+(this was feasible for our Section 7 experiments), but in
+general the expectations can be efﬁciently approximated by
+sampling for /Psi1, as in POMCP (Silver and V eness, 2010;
+Patten et al., 2017). Our theoretical analysis (see Section 5)
+is valid for these cases since the standard UCT algorithm
+assumes the rewards obtained at leaf nodes are probabilistic
+(Kocsis and Szepesvári, 2006), and the standard PC algo-
+rithm is applicable if there is noise in the system (W olpert
+et al., 2006).
+5. Analysis
+In this section, we provide a detailed theoretical analysis
+of Dec-MCTS. The algorithm is an anytime and decen-
+tralized approach to multi-robot coordination with two key
+algorithmic components: (1) the tree search (Section 4.3) is
+designed to perform long-horizon planning for single-robot
+action sequences while considering the changing plans of
+the other robots; and (2) the product distribution optimiza-
+tion (Section 4.4) is designed to directly optimize the joint
+multi-robot plan while being restricted to a small subset
+of possible action sequences. While it is difﬁcult to make
+any strong claims of global optimality in the context of
+decentralized, long-horizon planning with general objective
+functions, we focus our analysis on characterizing the con-
+vergence properties of these two algorithmic components,
+then discuss the implications of these results.
+In Section 5.1 we begin by presenting and analyzing a
+special type of MAB problem that is related to tree search.
+Section 5.2 then presents our main analytical result that the
+D-UCT algorithm (Algorithm 2) maintains an exploration–
+exploitation trade-off for child selection while the distribu-
+tions q
+r
+n are changing (and converging). In Section 5.3 we
+characterize the convergence of Algorithm 3 given a con-
+tracted sample space of distributions ˆX
+r
+n ⊂ X r. Finally,
+in Section 5.4 we remark on the implications of these
+results in the context of the overall Dec-MCTS algorithm
+(Algorithm 1).
+5.1. D-UCB applied to bandits
+W e begin our analysis by studying D-UCB (Garivier and
+Moulines, 2011) for a speciﬁc type of non-stationary,
+switching bandit problem. The classic MAB problem is that
+of a gambler deciding which arm to play from a row of slot
+machines with stationary but unknown reward distributions.
+As a result, bandits are the canonical model for studying
+the trade off of acquiring knowledge (“exploration”) and
+maximizing reward (“exploitation”), or the exploration–
+exploitation dilemma . In the context of Algorithm 2, the
+“arm” is analogous to a node selected to expand for a given
+MCTS rollout. W e can therefore leverage the analysis of
+the MAB for the tree search problem (later in Section 5.2).
+To achieve this, we modify the assumptions on the type of
+reward distributions for each arm to those expected at inter-
+nal nodes of the tree while performing the proposed D-UCT
+algorithm.
+Our analysis follows that of Kocsis et al. (2006); Koc-
+sis and Szepesvári (2006) who analyze the use of UCB1 as
+the MCTS node selection policy. W e mainly reference the
+technical report by Kocsis et al. (2006) where the proofs
+for their theorems are given. Speciﬁcally, in this section we
+analyze D-UCB applied to a special type of bandit prob-
+lem, then in Section 5.2 we exploit this analysis in applying
+D-UCT to the root node of a tree.
+In the remainder of this section, we ﬁrst provide an upper
+bound on the number of pulls of any arm that is subopti-
+mal in Lemma 1. Then, Lemma 2 will bound the difference
+between the optimal payoff and expected total payoff up
+to some arbitrary time. Lemma 3 then gives concentration
+bounds of the actual mean about this expected value. W e
+then give the asymptotic probability of the algorithm fail-
+ing in Lemma 4. The proofs of these lemmas are provided
+in Appendix A.
+5.1.1. Technical preliminaries. W e consider D-UCB
+applied to a particular type of switching bandit problem.
+Let I
+t ∈{ 1,... , K} denote the arm pulled at round t, with
+K the number of possible arms. After selecting node It = i,
+the gambler receives a stochastic payoff Xi,t ∈ [0, 1]. The
+sequence of payoffs generate the stochastic process {Xi,t}t,
+i = 1,... , K, t ≥ 1.
+The D-UCB arm selection policy uses the same
+bound (3) as in Section 4.3.1. Speciﬁcally, given a discount
+factor γ ∈(1/2, 1), the D-UCB algorithm chooses the arm
+with the best discounted UCB
+I
+t = arg max
+i∈{1,...,K}
+{ ¯Xi,t( γ) +ct,ti ( γ) } (13)
+where ¯Xi,t( γ) denotes the discounted average reward (6)
+and ct,ti ( γ) is the bias sequence (7) for arm i at round t.S i m -
+ilar to Section 4.3.1, ti( γ) denotes the discounted number
+of times arm i is pulled (4) and t( γ) denotes the discounted
+total number of pulls (5).
+As in Kocsis and Szepesvári (2006), we allow the mean
+value of the payoffs to drift as a function of time; however,
+these values can also change dramatically at breakpoints.
+These breakpoints are deﬁned as epochs when a previ-
+ously suboptimal arm becomes optimal. W e denote by ϒt
+the number of breakpoints before time t. When referring to
+quantities that are not discounted (i.e. γ = 1), we remove
+326 The International Journal of Robotics Research 38(2-3)
+the γ argument (e.g. t = t(1), ¯Xi,t = ¯Xi,t(1), etc.). Fur-
+ther, the ﬁltration F referred to in this paper is the natural
+ﬁltration.
+Recall we require a number of assumptions on the reward
+distributions of each arm so that our analysis for this bandit
+problem can later be exploited in our analysis for D-UCT .
+Our ﬁrst assumption relates to the payoff sequence of each
+arm.
+Assumption 1. Fix 1 ≤ i ≤ K. Let {F
+i,t}t be a ﬁltration
+such that {Xi,t}t is {Fi,t}-adapted and X i,t is conditionally
+independent of Fi,t+1, Fi,t+2,... given Fi,t− 1. Further , there
+exists an integer T p such that for t i ≥ Tp and t < ti,X i,t is
+independent from Fi,t.
+As mentioned, we allow the expected value for each arm
+μi,t to drift over time, and change abruptly at a breakpoint.
+W e assume the number of breakpoints are upper bounded
+as follows.
+Assumption 2. The monotone sequence giving the maxi-
+mum number of breakpoints up to time t {ϒt}t is known and
+bounded, such that limt→∞ ϒt = supt ϒt < ∞ and (by
+deﬁnition) ϒt+1 ≥ ϒt.
+The number of abrupt changes to μi,t are thus bounded by
+supt ϒt. As the following assumption states, we also assume
+that the expected payoff converges.
+Assumption 3. The limit μi = limt→∞ μi,t exists for all
+i ∈{ 1,... , K}.
+The difference between the expected reward at time t and
+the limit is termed the drift δi,t = μi,t − μi. For any arbitrary
+time t, denote the optimal arm as i∗
+t , and deﬁne the optimal
+expected payoff byμi∗t ,t = maxi∈{1,...,K} μi,t. Thus, we obtain
+the optimal expected payoff up to time t as
+μ∗
+t = 1
+t
+t∑
+u=1
+μi∗u ,u
+Finally, the minimum difference between the expected
+reward for an optimal arm i∗
+u and expected reward for arm i
+at all times is obtained as
+/Delta1i,t = min
+u∈{1,...,t}
+{
+μi∗u ,u − μi,u : i ̸= i∗
+u
+}
+Our last assumption is that we require an index T0( ϵ) above
+which the drift δi,t becomes proportional to /Delta1i,t.L e t Mi( t)
+denote the number of pulls of arm i following the most
+recent breakpoint.
+Assumption 4. There exists an index T 0( ϵ) such that, for
+any arbitrary ϵ> 0 and Mi( t) ≥ T0( ϵ), |δi,t|≤ ϵ/Delta1i,t/2 and
+|δ∗
+t |≤ ϵ/Delta1i,t/2 for all i.
+5.1.2. Theoretical analysis. Given these assumptions, we
+now begin our analysis of D-UCB for this bandit problem.
+First, we bound the number of times each suboptimal arm
+is pulled. Denote by P
+γ and Eγ the probability distribution
+and expectation under the policy D-UCB using the discount
+factor γ.
+Let ˜T
+i( t) = ∑t
+u=1 1{Iu=i̸=i∗u} be the number of times arm i
+was played when it was not the best arm in the ﬁrst t rounds.
+Lemma 1 (Number of suboptimal pulls) . Consider
+D-UCB applied to a non-stationary, switching bandit prob-
+lem where Assumptions 1–4 are satisﬁed and where the
+bias sequence c
+t,ti ( γ) used by D-UCB is given by (7). Let
+Cp > 1/
+√
+8 and γt = 1 − √ E[ϒt]/16t. F or any arm
+i ∈{ 1,... , K} and t > 1,
+Eγ[˜Ti( t)] ≤ O
+(√
+E[ϒt]t( C2
+p log t + T0( ϵ) +Tp)
+)
+(14)
+The value of Cp stated is more general than the common
+statement that Cp = 1/
+√
+2 given, for example, by Kocsis
+and Szepesvári (2006) and Browne et al. (2012). W e discuss
+this further in Remark 3 in Appendix A.
+The following lemma gives convergence of the expected
+undiscounted payoff E
+γ[ ¯Xt] received up to time t towards
+the optimal payoff μ∗. The proof is a simpliﬁed version of
+Theorem 2 of Kocsis et al. (2006) that allows for changing
+“best arms.” The proof uses the expected number of subop-
+timal pulls (Lemma 1) and the deﬁnition of drift δ∗
+t to bound
+the payoff.
+Lemma 2 (Expected payoff convergence towards optimal
+payoff). Let
+¯Xt :=
+K∑
+i=1
+Ti( t)
+t
+¯Xi,t
+Under the assumptions of Lemma 1,
+⏐⏐Eγ[ ¯Xt] − μ∗⏐⏐ ≤
+⏐⏐δ∗
+t
+⏐⏐
++ O
+(
+K
+√
+E[ϒt]/t
+(
+C2
+p log t + T0 + Tp
+))
+(15)
+where T0 = T0(1/2) .
+From Lemma 2, we have the convergence of the expected
+payoff Eγ[ ¯Xt] about the optimal payoff; however, we are
+yet to obtain results about the concentration of the actual
+payoff ¯Xt about this quantity. To bound this concentration,
+we leverage the results of Kocsis et al. (2006), which has a
+non-trivial assumption related to the number of suboptimal
+pulls. Use Zt to denote the indicator variable that a subop-
+timal arm was pulled. As with Kocsis et al. (2006), from
+Assumption 1, we have that, for t ≥ Tp, the indicator Zt
+is independent of Zt+1, Zt+2,... ,g i v e nZ1,... , Zt− 1. Thus,
+after Tp and T0, the non-stationary bandit problem becomes
+equivalent to a stationary problem with high probability.
+This allows us to establish the concentration ofE
+γ[ ¯Xt] about
+¯Xt in the following lemma.
+Lemma 3 (Payoff convergence towards expected payoff) .
+Fix an arbitrary 0 <ε ≤ 1 and let /Gamma1t = 9CpE[ϒt]
+Best et al. 327
+t
+√
+2l o g(2/ε). Then, under the assumptions of Lemma 1,
+for
+t ≥ O
+(
+K
+√
+E[ϒt]t( C2
+p log t + T0 + Tp)
+)
+the following bound holds:
+P
+(
+t| ¯Xt − Eγ[ ¯Xt]|≥ /Gamma1t
+)
+≤ ε (16)
+Next, we are interested in the probability of the algorithm
+failing. The proof relies on our assumption that the break-
+point sequence is known monotone and bounded, resulting
+in D-UCB becoming equivalent to UCB1 for large t.
+Lemma 4 (Convergence of failure probability) . Under the
+assumptions of Lemma 1 it holds that
+lim
+t→∞
+Pγ( It ̸= i∗
+t = i∗) = 0
+5.2. D-UCB applied to trees
+W e now discuss the application of D-UCB as the node
+selection policy of MCTS. The assumptions we made about
+the bandit problem in the above section allows us to analyze
+convergence of the actual to the optimal payoff sequence at
+the root node after some transitory period.
+Recall that the node selection problem at each node in
+the tree is equivalent to the bandit problem, however with
+different assumptions on the payoff received. From the per-
+spective of node i
+d , after selecting node Iid ,t = j, the tree
+search further down the tree (e.g. Ij,t) and subsequent MCTS
+rollout yield a stochastic payoff Fj,t = Ft ∈ [0, 1] that
+is adapted to Fj,t (Assumption 1). As nodes are slowly
+expanded in the tree search, the expected reward at any node
+higher up the tree slowly drifts until all nodes are explored
+in the subtree (Assumption 3).
+The sequence of payoffs generate the stochastic process
+{Fj,t}t, ∀j ∈ C( id ) and t ≥ 1. W e simplify the analysis
+by assuming a constant branching factor K, i.e. C( id ) =
+{1,... , K}, ∀id .
+Applying the above lemmas to the tree T r, we require
+some extra notation. Recall that ¯Fid ,tid is the empirical
+mean; it follows that ¯Fi0,ti0 is the mean at the root node.
+Further, let μ∗
+i0 denote the optimal expected payoff at the
+root node and note that ti0 = t.
+Theorem 1. Consider algorithm D-UCT running on a tree
+T of depth D and branching factor K. The payoff distribu-
+tions of the leaf nodes are independently distributed and
+can change at breakpoints. The sequence that gives the
+expected bound of breakpoints {E[ϒtj ]} follows Assump-
+tion 2 and γtj = 1 −
+√
+E[ϒtj ]/16tj for all nodes j. Then,
+when Mi0 ( t) ≥ Tp and Mi0 ( t) ≥ T0, the bias of the payoff at
+the root node,
+| ¯Fi0,ti0 − μ∗
+i0 |= O
+(
+KD log( t)
+√
+E[ϒt]/t
+)
+(17)
+Further , the probability of failure at the root node becomes
+zero as t grows large.
+Proof. The proof is done by induction on D.
+First, for D = 1, running the D-UCB algorithm as
+the node selection policy is equivalent to running D-UCB
+on a bandit problem. Thus, the payoffs Fi0,t are indepen-
+dent and identically distributed ( Tp = 0) and, comparing
+Lemma 1 with Theorem 1 of Garivier and Moulines (2011),
+we deduce that T0 = 0. The expected bias thus follows from
+Lemma 2, and the concentration of the actual payoff about
+the expected value follows from Lemma 3. By Assump-
+tion 2, the asymptotic probability of failure follows from
+Lemma 4.
+Now, consider a tree of depth D and assume the state-
+ment holds up to a tree of depth D − 1. First, note that,
+due to our assumptions, Lemmas 1–4 hold for any inter-
+nal node of the tree. Regarding Assumption 1, before T
+p,
+the payoffs Fi0,t are not independently distributed. Instead,
+since D-UCB node selection is also used further down the
+tree ( d > 0), the payoff is {Fi0,t}-adapted. However, there
+is a point Tp where the payoffs become independent as the
+tree search problem becomes equivalent to a MAB problem.
+When Mi0 ( t) ≥ Tp and Mi0 ( t) ≥ T0, it follows by Lemma 2
+that the bias at the root converges at the rate of
+| ¯Fi0,ti0 − μ∗|=| δ∗
+ti1
+|+ O
+(
+K log( t)
+√
+E[ϒt]/t
+)
+(18)
+where δ∗
+ti1
+is the rate of convergence of the bias for the best
+move. By the induction hypothesis
+|δ∗
+ti1
+|= O
+(
+K( D − 1) log( t)
+√
+E[ϒt]/t
+)
+, i1 = 1,... , K
+Substituting this result into (18) gives (17). By Assump-
+tion 2, the expected number of breakpoints lim t→∞ E[ϒt]i s
+bounded, and hence by Lemma 4 the probability of failure
+becomes zero.
+Remark 1. The results presented here are mainly con-
+cerned with the convergence of the bias after some tran-
+sitory period . For the standard UCT case, Kocsis et al.
+(2006) assumed the Tp term was 0 and suggested T0 =
+O( KD). However, it was recently shown that this transitory
+period using the UCT algorithm on a binary tree ( K = 2)
+of depth D can be /Omega1(exp(exp(... exp( 1)... ))) ( D − 1
+nested exponentials) in a worst-case instance (Coquelin and
+Munos, 2007). Gelly et al. (2012) suggested instead that
+the UCT (and, thus, D-UCT) strategy will be most success-
+ful when the leaves of large subtrees share similar rewards,
+i.e. a “smoothness” assumption on the reward distributions.
+Active perception scenarios typically exhibit some degree
+of “smoothness,” such that similar sequences of actions
+yield similar rewards and thus there is a correlation amongst
+subtree leaves.
+Remark 2. Assumption 2 states several conditions for the
+breakpoint sequence {E[ϒ
+t]}t. W e can ensure these assump-
+tions are satisﬁed by selecting appropriate values for the
+sample period τn (used in Section 4.4). Here, we provide a
+concrete example deﬁnition for τn. Recall that n is the num-
+ber of times ˆXn is changed and τn is the number of calls to
+328 The International Journal of Robotics Research 38(2-3)
+Algorithm 2 with sample space ˆXn.L e t c > 0 denote the
+ﬁxed number of iterations in Algorithm 2 (line 2). For this
+example, we let τ
+n = 1/⌊at− 2⌋ and, therefore, n =⌈ a(1 −
+t− 1) ⌉ where a > c. Therefore, the expected upper bound on
+breakpoints E[ϒt] = n/c and, thus, lim t→∞ E[ϒt] = a/c.
+This ensures Lemma 4 holds and the bias at the root node
+(17) is
+| ¯Fi0,ti0 − μ∗
+i0 |= O
+(
+KD log( t) /
+√
+t
+)
+Therefore, D-UCT achieves a polynomial convergence rate,
+even in problems where the reward distributions are chang-
+ing abruptly, such as in Dec-MCTS.
+5.3. V ariational methods by importance
+sampling
+W e now consider the effect of contracting the sample space
+ˆXn ⊂ X on the convergence of Algorithm 3. Recall that the
+pq KL divergence is the divergence from a product distri-
+bution qn to the optimal joint distribution pn. W e then have
+the following proposition.
+Proposition 1. Algorithm 3 asymptotically converges to a
+distribution that locally minimizes the pq KL divergence,
+given an appropriate subset ˆX
+n ⊂ X .
+W e justify Proposition 1 as follows. Consider the situa-
+tion where, at each iteration n, we randomly choose a subset
+ˆX r
+n ⊂ X r for each robot. This approach is equivalent to
+Monte Carlo sampling of the expected utility and thus the
+biased estimator is consistent (asymptotically converges to
+E[ f
+r]). For tractable computation and faster convergence,
+in our algorithm we modify the random selection by choos-
+ing a sparse set of strategies ˆXn with the highest expected
+utility (Section 4.4). Although this does not ensure we sam-
+ple the entire domain X asymptotically, in practice qn( ˆXn)
+is a reasonably accurate representation of qn( X ), and there-
+fore this gives us an approximation to importance sam-
+pling (W olpert et al., 2006). V ariants of Algorithm 3 have
+been shown to converge to a distribution that locally mini-
+mizes the pq KL divergence under reasonable assumptions,
+such as an appropriate cooling schedule for β (W olpert and
+Bieniawski, 2004).
+5.4. Analysis of Dec-MCTS
+The analyses above show separately that the tree search
+of Algorithm 2 balances exploration and exploitation and
+that, under reasonable assumptions, Algorithm 3 converges
+to the product distribution that best optimizes the joint
+action sequence. These results provide strong motivation
+for the use of these components in the algorithm. How-
+ever, they do not immediately yield a characterization of
+optimality for Algorithm 1. To prove convergence rates
+and global optimality, we would need to characterize the
+co-dependence between the evolution of the reward distri-
+butions E
+qn [ f r | xr] used when sampling the tree and the
+Fig. 2. The generalized team orienteering problem. The eight
+robots (colored paths) aim to collectively visit a maximal num-
+ber of goal regions (green circles, weighted by importance). The
+robots follow Dubins paths, are constrained by distance budgets
+and must avoid obstacles (black).
+contraction of the sample space ˆXn used for optimizing qn.
+This co-dependence is complex due to the cyclic nature of
+the algorithm and communication of information between
+robots, and thus it is unlikely that any strong claims for
+global optimality can be made. However, this is generally
+not achievable in the context of decentralized, long-horizon
+planning with general objective functions, as addressed in
+this paper. Despite this, the following experiments show that
+the Dec-MCTS algorithm converges rapidly to high-quality
+solutions in multi-robot active perception scenarios.
+6. Experiments: Generalized team
+orienteering
+In this section, we evaluate the performance of our algo-
+rithm in an abstract multi-robot information gathering prob-
+lem. An illustration of the problem and an example solution
+is shown in Figure 2. W e empirically show convergence,
+robustness to intermittent communication and a comparison
+to a centralized variant of MCTS.
+6.1. Problem statement
+The problem is motivated by tasks where a team of Dubins
+robots maximally observes a set of features of interest in an
+environment, given a travel budget (Best et al., 2018). Each
+feature can be viewed from multiple viewpoints and each
+viewpoint may be within observation range of multiple fea-
+tures. This formulation generalizes the orienteering prob-
+lem (V ansteenwegen et al., 2011; Gunawan et al., 2016) by
+combining the set structure of the generalized TSP (Noon
+Best et al. 329
+and Bean, 1989) with the budget constraints of the ori-
+enteering problem with neighborhoods (Faigl et al., 2016)
+extended for multi-agent scenarios (Best et al., 2018).
+Robots navigate within a graph representation of an envi-
+ronment with vertices v
+i ∈ V, edges eij :=⟨ vi, vj⟩∈ E
+and edge traversal costs cij. Each vertex vi represents a
+location and orientation ( x, y,θ) within a square workspace
+with randomly placed obstacles. The action sequences of
+each robot are deﬁned as paths through the graph beginning
+at a start vertex unique to each robot. The edge costs are
+deﬁned as the distance length of the Dubins path between
+the two conﬁgurations. All edges are connected within a
+ﬁxed distance.
+For the objective function, we have a collection of sets
+S =( S
+1, S2, ... ), where each Sk ⊆ V. These sets may repre-
+sent a set of features of interest, where a vertex is an element
+of a set only if the associated feature can be observed from
+the vertex location. W e assume each set is a disk, how-
+ever the formulation could extend to more complex models
+(Best et al., 2018). The vertices v
+j ∈ V are randomly placed
+within the sets. A set Sk is visited if ∃vj ∈ x, vj ∈ Sk and
+each visited set yields an associated reward wk . There is
+no additional reward for revisiting a set. The objective is
+deﬁned as the sum of the rewards of all visited sets.
+6.2. Calculating expectations
+The Dec-MCTS algorithm requires computing several
+expectations that, in general, should be approximated using
+sampling. However, for this problem deﬁnition it is pos-
+sible to exploit the structure of the objective function to
+efﬁciently compute exact expectations. W e compute expec-
+tations in a similar way to (3) by Best and Fitch (2016):
+E
+qn [g] =
+∑
+Sk∈S
+wk × Pqn ( ∃vj ∈ x, vj ∈ Sk )
+=
+∑
+Sk∈S
+wk
+⎛
+⎝1 −
+∏
+vj∈Sk
+∏
+xr∈ ˆXn
+(
+1 − qr
+n( xr) 1{vj∈xr}
+)
+⎞
+⎠
+where Pqn ( ∃vj ∈ x, vj ∈ Sk ) is the probability that at least
+one vj ∈ Sk is visited by at least one robot. This can be
+computed much more efﬁciently than the general equation
+(linear rather than exponential time in the number of robots)
+since it only requires iterating over the possible paths for
+individual robots (x
+r ∈ ˆX r
+n ,∀r) rather than iterating over all
+joint paths (x ∈ ˆXn).
+6.3. Experiment setup
+W e compare our algorithm (Dec-MCTS) with centralized
+MCTS (Cen-MCTS), which consists of a single tree where
+robot r’ s actions appear at tree depths (r, r+ R, r+ 2R,... ).
+Intermittent communication is modeled by randomly drop-
+ping messages. Messages are broadcast by each robot at 4
+Hz and a message has a probability of being received by
+each individual robot.
+Experiments were performed with eight simulated robots
+running in separate Robot Operating System (ROS) nodes
+on a quad-core computer with hyperthreading (eight virtual
+cores). Each random problem instance (Figure 2) consisted
+of 200 disks with rewards between 1 and 10, 5 obstacles,
+4000 graph vertices, and random start vertices for each
+robot. Each iteration of Algorithm 1 performs 10 MCTS
+rollouts and 1 communication broadcast. The set ˆX
+r
+n con-
+sists of 10 paths that are resampled every 10 iterations. The
+MCTS rollout policy recursively selects the next edge that
+does not exceed the travel budget and maximizes the ratio
+of the increase of the weighted set cover to the edge cost.
+6.4. Results
+The ﬁrst experiments (Figure 3(a)) show that Dec-MCTS
+outperforms Cen-MCTS despite the increased difﬁculty of
+planning in a decentralized setting. Dec-MCTS achieved
+a median 7 % reward improvement over Cen-MCTS after
+120 s, and a higher reward in 91 % of the environments.
+Dec-MCTS typically converged after ∼ 60 s. A paired
+single-tailed t-test supports the hypothesis ( p < 0.01) that
+Dec-MCTS achieves a higher reward than Cen-MCTS for
+time >7 s. Cen-MCTS performs well initially since it per-
+forms a centralized greedy rollout that ﬁnds reasonable
+solutions quickly. Dec-MCTS soon reaches deeper levels
+of the search trees, though, which allows it to outperform
+Cen-MCTS. This is because Dec-MCTS uses a collec-
+tion of search trees with smaller branching factors than
+Cen-MCTS, but still successfully optimizes over the joint
+space. W e note that in this implementation Dec-MCTS
+is performing parallel computation while Cen-MCTS is
+mostly sequential. While it is difﬁcult to measure the dif-
+ference in computation resources used (due to the use of
+virtual cores, less than 100% processor utilization, and
+overheads of using ROS message passing), the results indi-
+cate that Dec-MCTS would outperform Cen-MCTS after
+adjusting for this difference in computation resources.
+The second experiments analyzed the effect of commu-
+nication degradation. When the robots did not communi-
+cate, the algorithm achieved a median 31 % worse than
+Cen-MCTS, but with full communication achieved 7 % bet-
+ter than centralized, which shows the robots can success-
+fully cooperate by exploiting the communication channel.
+Figure 3(b) shows the results for partial communication
+degradation. When half of the packets are lost, there is
+no signiﬁcant degradation of performance. When 97 %
+of packets are lost the performance is degraded but the
+algorithm still performs signiﬁcantly better than with no
+communication. These results demonstrate the algorithm is
+robust to unpredictable communication loss.
+7. Experiments: Active object recognition
+This section describes experiments for online active object
+recognition, using point cloud data collected from an
+330 The International Journal of Robotics Research 38(2-3)
+Fig. 3. (a) Comparison of Dec-MCTS with varying computation time to Cen-MCTS (120 s). (b) Performance of Dec-MCTS with
+intermittent communication (60 s computation time). V ertical axes in (a) and (b) show percentage additional reward achieved by Dec-
+MCTS compared with Cen-MCTS. Error bars show 0, 25, 50, 75, and 100 percentiles (excluding outliers) of 100 random problem
+instances.
+outdoor mobile robot in an urban scene (Figure 4). W e
+ﬁrst outline the problem and experiment setup, and then
+present results that analyze the value of online replanning
+and compare Dec-MCTS to a greedy planner.
+7.1. Problem setup
+A team of robots aim to determine the identity of a set of
+static objects in an unknown environment. Each robot asyn-
+chronously executes the following cycle: (1) plan a path that
+is expected to improve the perception quality; (2) execute
+the ﬁrst planned action; (3) make a point cloud observa-
+tion using onboard sensors; and then (4) update the belief
+of the object identities and their poses. Each robot asyn-
+chronously performs this cycle until their travel budget is
+exhausted. The robots have the same Dubins motion model
+as in Section 6. Each graph edge has an additional constant
+cost that represents the time required to process an observa-
+tion and perform replanning. Thus, each robot’ s budget is a
+constraint on the sum of its travel distance and processing
+time.
+W e use a perception model for object recognition simi-
+lar to that proposed in Chapter 7.2 of Patten (2017). The
+robots maintain a belief of the identity of each observed
+object, represented as the probability that each object is an
+instance of a particular object from a given database. The
+aim is to improve this belief, which is achieved by maxi-
+mizing the mutual information objective proposed by Patten
+et al. (2015). The posterior probability distribution for each
+object after a set of observations is computed recursively
+using Bayes’ rule. The observation likelihood is calculated
+by measuring the similarity between the shape of the point
+cloud with each model instance in the database. Similar-
+ity is computed by ﬁrst aligning the point clouds of a pair
+of objects using the iterative closest point (ICP) algorithm
+(Besl and McKay, 1992) and then calculating the symmetric
+residual error (Douillard et al., 2012). Objects may merge
+or split after each observation if the segmentation changes.
+Observations are fused using decentralized data fusion or
+a central processor and shared between all robots, and
+thus all robots are assumed to have the same belief of the
+environment. While planning, the value of future observa-
+tions are estimated by simulating observations of objects
+in the database for all possible object identities, weighted
+by the belief probabilities, and using maximum likelihood
+estimates for poses.
+7.2. Experiment setup
+The experiments use a point cloud dataset (Patten et al.,
+2015) of V elodyne scans of outdoor objects in a 30× 30 m2
+park shown in Figure 4(a). The environment consisted
+of 13 objects from 7 different model types as shown in
+Figure 4(b)–(h). The dataset consists of single scans from
+50 locations and each scan was split into 8 overlapping
+observations with different orientations. Each observation
+had a 180° ﬁeld of view and 8 m range. These locations
+and orientations form the roadmap vertices with associ-
+ated observations. Each object was analyzed from separate
+data to generate the model database. The robots are given a
+long-range observation from the start location to create an
+initial belief of most object locations. The team consists of
+three robots, who share a ﬁxed start location with different
+orientations.
+The experiments simulate an online mission where each
+robot asynchronously alternates between planning and per-
+ceiving. Three planners were trialled: our Dec-MCTS algo-
+rithm with 120 s replanning after each action, Dec-MCTS
+without replanning, and a decentralized greedy planner that
+selects the next action that maximizes the mutual infor-
+mation divided by the edge cost. The recognition score of
+an executed path was calculated as the belief probability
+Best et al. 331
+Fig. 4. Experiment setup for the point cloud dataset: (a) environment with labeled locations, (b) picnic table (PT), (c) barbecue (BQ),
+(d) wheelie bin (WB), (e) motorbike (MB), (f) street light (ST), (g) tree (TR), and (h) palm tree (PT).
+(a) (b)
+Fig. 5. (a) Task performance over mission duration for 10 trials (maximum possible score is 0.62). (b) Overlay of two example missions
+with three robots. Blue paths denote online Dec-MCTS (score 0.53). Orange paths denote greedy policy (score 0.42). Objects are green
+point clouds where shading indicates height. Robots observe at black dots in direction of travel. Start location top right.
+that each object matched the ground-truth object type, aver-
+aged over all objects. The planners cannot directly optimize
+the paths with respect to the recognition score since the
+ground truth is not known in advance; however, planning
+with respect to the mutual information objective function is
+intended to indirectly optimize the recognition score.
+7.3. Results
+Overall, the results validate the coordination performance
+of Dec-MCTS. Figure 5(a) shows the recognition score
+(task performance) over the duration of the mission for
+10 trials with 3 robots. The maximum possible recogni-
+tion score subject to the perception algorithm and dataset
+was 0.62, which was achieved by visiting every location
+in the dataset. Dec-MCTS outperformed greedy halfway
+through
+the missions since some early greedy decisions and
+poor coordination reduced the possibility of making sub-
+sequent valuable observations. By the end of the missions
+some greedy plans successfully made valuable observa-
+tions, but less often than Dec-MCTS. The no-replanning
+scenario achieved a similar score as the online planner in the
+ﬁrst half, showing that the initial plans are robust to changes
+in the belief. For the second half, replanning improved the
+recognition score since the belief had changed considerably
+since the start. This shows that while the generated plans
+are reasonable for many steps into the future, there is also
+value in replanning as new information becomes available.
+Figure 5(b) shows two example missions using online
+Dec-MCTS (blue) and greedy (orange) planners, and their
+score over the mission duration. Greedy stayed closer to the
+start location to improve the recognition of nearby objects,
+332 The International Journal of Robotics Research 38(2-3)
+and consequently observed objects on the left less often;
+reaching this part of the environment would require making
+high-cost/low-immediate-value actions. On the other hand,
+Dec-MCTS achieved a higher score since the longer plan-
+ning horizon enabled ﬁnding the high value observations on
+the left, and was better able to coordinate to jointly observe
+most of the environment.
+8. Conclusion and future work
+W e have presented a new algorithm for decentralized coor-
+dination that is suitable for a general class of problems.
+Our results demonstrate that the performance (i.e. solu-
+tion quality) of our approach is as good as or better than
+its centralized counterpart in real-world applications, and
+that it effectively optimizes over sequences in the joint-
+action space even with intermittent communication. A key
+conceptual feature of our approach is its generality in repre-
+senting joint action sequences probabilistically rather than
+deterministically. Dec-MCTS has the ability to efﬁciently
+plan over long planning horizons, computes anytime solu-
+tions, allows incorporating prior knowledge, and provides
+convergence rate guarantees.
+The problem formulation considered in this paper is
+general in that we are interested in planning sequences
+of actions to optimize a joint objective function, without
+requiring assumptions such as submodularity. A straight-
+forward extension to our approach would be to adapt the
+algorithm to address the Dec-POMDP formulation. This
+could be achieved by generalizing the MCTS component of
+our algorithm to POMCP (Silver and V eness, 2010) while
+still using our proposed D-UCT tree expansion policy. A
+difﬁculty would be to efﬁciently ﬁnd good-quality solu-
+tions while also considering probabilistic transition mod-
+els and having the search tree branch for both actions and
+observations.
+Our experiments demonstrate that Dec-MCTS achieves
+reasonable performance even when the communication
+becomes less reliable. While these results show a robust-
+ness to communication loss, they also indicate that some
+of the communication messages are not entirely necessary.
+An interesting avenue for future work would be to develop
+a communication-planning algorithm that selects when to
+communicate and who to communicate to while running
+Dec-MCTS in scenarios with limited communication band-
+width. A possible approach could be a dynamic program-
+ming formulation for planning communication to main-
+tain coordination in a similar way to how Ondruska et al.
+(2015) planned the use of navigation hardware to maintain
+localization accuracy. Other communication-planning for-
+mulations that may be useful here include those of Kassir
+et al. (2015) and Lindhé and Johansson (2013). A key dif-
+ﬁculty is to develop a measure of information value of a
+communication message in the context of improving plan-
+ning performance. Along this line of inquiry, Cliff et al.
+(2017) introduced measures for quantifying the dynamics
+of inter-agent dependencies in a team that is optimizing a
+collective goal. W e have begun exploring these ideas for
+communication planning in Best et al. (2018).
+Another interesting line of inquiry is to incorporate coali-
+tion forming into our approach. As formulated, static coali-
+tions of agents can be formed by generalizing the product
+distributions in our framework to be partial joint distri-
+butions. The product distribution described in Section 4.4
+would be deﬁned over groups of robots rather than indi-
+viduals. Each group acts jointly, with a single distribution
+modeling the joint actions of its members, and coordination
+between groups is conducted as in our algorithm. Just as our
+approach corresponds to mean-ﬁeld methods, this approach
+maps nicely to generalized mean ﬁeld inference (Xing et al.,
+2004) or region-based variational methods (Y edidia et al.,
+2005), and guarantees from these approaches may be appli-
+cable. It would also be interesting to study dynamic coali-
+tion forming, where the mapping between agents and robots
+is allowed to change, and to develop convergence guaran-
+tees for this case. A key challenge would be to determine
+which robots’ plans are more tightly coupled and, therefore,
+would beneﬁt from planning within a coalition.
+It would be interesting to apply the same general
+framework to multi-agent scenarios where standard algo-
+rithms already exist for associated single-agent scenarios.
+Problem-speciﬁc single-agent planning algorithms could
+replace the MCTS component of Dec-MCTS, while still
+performing the distributed product distribution optimiza-
+tion phase, in order to provide stronger theoretical guaran-
+tees or algorithmic efﬁciency for special cases. Scenarios
+where this could be applicable include multi-robot mission
+monitoring (Best et al., 2017), persistent monitoring (Alam-
+dari et al., 2014), cooperative wildlife localization (Cliff
+et al., 2015), TSP variants (Best et al., 2018), collision
+avoidance (Otte and Correll, 2013), and dynamic cover-
+age problems (Hönig and Ayanian, 2016). It would also
+be worth investigating other MCTS variants, e.g. BRUE
+(Feldman and Domshlak, 2014), as an alternative to UCT .
+Funding
+The author(s) disclosed receipt of the following ﬁnancial support
+for the research, authorship, and/or publication of this article: This
+work was supported in part by the Australian Research Coun-
+cil’ s Discovery Project funding scheme (No. DP140104203), the
+Australian Centre for Field Robotics, the New South Wales State
+Government, the Faculty of Engineering and Information T ech-
+nologies, The University of Sydney, under the Faculty Research
+Cluster Program, and The University of Sydney’ s International
+Research Collaboration Award.
+References
+Alamdari S, Fata E and Smith SL (2014) Persistent monitoring
+in discrete environments: Minimizing the maximum weighted
+latency between observations. The International Journal of
+Robotics Research 33(1): 138–154.
+Best et al. 333
+Amato C (2015) Cooperative decision making. In: Decision Mak-
+ing Under Uncertainty: Theory and Application . Cambridge,
+MA: MIT Press.
+Arora A, Fitch R and Sukkarieh S (2017) An approach to
+autonomous science by modeling geological knowledge in a
+Bayesian framework. In: Proceedings of IEEE/RSJ Interna-
+tional Conference on Intelligent Robots and Systems (IROS) .
+Atanasov N, Ny JL, Daniilidis K and Pappas GJ (2015)
+Decentralized active information acquisition: Theory and
+application to multi-robot SLAM. In: Proceedings of IEEE
+International Conference on Robotics and Automation (ICRA) ,
+pp. 4775–4782.
+Auer P , Cesa-Bianchi N and Fischer P (2002) Finite-time analysis
+of the multiarmed bandit problem. Machine Learning 47(2):
+235–256.
+Auger D (2011) Multiple tree for partially observable Monte-
+Carlo tree search. In: Proceedings of European Conference on
+the Applications of Evolutionary Computation (EvoApplica-
+tions), pp. 53–62.
+Bajcsy R (1988) Active perception. Proceedings of the IEEE
+76(8): 966–1005.
+Bajcsy R, Aloimonos Y and Tsotsos JK (2017) Revisiting
+active perception. Autonomous Robots doi: 10.1007/s10514-
+017-9615-3.
+Bernstein DS, Givan R, Immerman N and Zilberstein S (2002)
+The complexity of decentralized control of Markov deci-
+sion processes. Mathematics of Operations Research 27(4):
+819–840.
+Besl PJ and McKay HD (1992) A method for registration of 3-D
+shapes. IEEE Transactions on Pattern Analysis and Machine
+Intelligence 14(2): 239–256.
+Best G, Cliff O, Patten T , Mettu R and Fitch R (2016) Decen-
+tralised Monte Carlo tree search for active perception. In:
+Proceedings of International W orkshop on the Algorithmic
+F oundations of Robotics (W AFR).
+Best G, Faigl J and Fitch R (2018) Online planning for multi-
+robot active perception with self-organising maps. Autonomous
+Robots doi: 10.1007/s10514-017-9691-4.
+Best G, Forrai M, Mettu RR and Fitch R (2018) Planning-aware
+communication for decentralised multi-robot coordination. In:
+Proceedings of IEEE International Conference on Robotics
+and Automation (ICRA).
+Best G and Fitch R (2016) Probabilistic maximum set cover with
+path constraints for informative path planning. In: Proceedings
+of ARAA Australasian Conference on Robotics and Automation
+(ACRA).
+Best G, Martens W and Fitch R (2017) Path planning with spa-
+tiotemporal optimal stopping for stochastic mission monitor-
+ing. IEEE Transactions on Robotics 33(3): 629–646.
+Binney J and Sukhatme G (2012) Branch and bound for infor-
+mative path planning. In: Proceedings of IEEE International
+Conference on Robotics and Automation (ICRA) , pp. 2147–
+2154.
+Bircher A, Kamel M, Alexis K, Oleynikova H and Siegwart R
+(2016) Receding horizon path planning for 3D exploration and
+surface inspection. Autonomous Robots doi: 10.1007/s10514-
+016-9610-0.
+Browne C, Powley E, Whitehouse D, et al. (2012) A survey
+of Monte Carlo tree search methods. IEEE Transactions on
+Computational Intelligence and AI in Games 4(1): 1–43.
+Charrow B (2015) Information-theoretic active perception for
+multi-robot teams. PhD Thesis, University of Pennsylvania.
+Chaslot GMJB, Winands MHM and van den Herik HJ (2008) Par-
+allel Monte-Carlo tree search. In: Proceedings of International
+Conference on Computers and Games (CG) , pp. 60–71.
+Choudhury S, Kapoor A, Ranade G, Scherer S and Dey D
+(2017) Adaptive information gathering via imitation learning.
+In: Proceedings of Robotics: Science and Systems .
+Cliff OM, Fitch R, Sukkarieh S, Saunders DL, and Heinsohn
+R (2015) Online localization of radio-tagged wildlife with an
+autonomous aerial robot system. In: Proceedings of Robotics:
+Science and Systems.
+Cliff OM, Lizier JT , Wang XR, Wang P , Obst O and Prokopenko
+M (2017) Quantifying long-range interactions and coher-
+ent structure in multi-agent dynamics. Artiﬁcial Life 23(1):
+34–57.
+Coquelin P and Munos R (2007) Bandit algorithms for tree search.
+In: Proceedings of Conference on Uncertainty in Artiﬁcial
+Intelligence (UAI), pp. 67–74.
+Corah M and Michael N (2017) Efﬁcient online multi-robot
+exploration via distributed sequential greedy assignment. In:
+Proceedings of Robotics: Science and Systems .
+Dias MB, Zlot R, Kalra N and Stentz A (2006) Market-based mul-
+tirobot coordination: A survey and analysis. Proceedings of the
+IEEE 94(7): 1257–1270.
+Douillard B, Quadros A, Morton P , Underwood JP and Deuge
+MD (2012) A 3D classiﬁer trained without ﬁeld samples. In:
+Proceedings of IEEE International Conference on Control,
+Automation, Robotics and Vision (ICARCV) , pp. 805–810.
+Dunbabin M and Marques L (2012) Robots for environmental
+monitoring: Signiﬁcant advancements and applications. IEEE
+Robotics and Automation Magazine 19(1): 24–39.
+Faigl J, P ˇeniˇcka R and Best G (2016) Self-organizing map-based
+solution for the orienteering problem with neighborhoods. In:
+Proceedings of IEEE International Conference on Systems,
+Man, and Cybernetics (SMC) , pp. 1315–1321.
+Fäulhammer T , Ambru¸s R, Burbridge C, et al. (2017) Autonomous
+learning of object models on a mobile robot. IEEE Robotics
+and Automation Letters 2(1): 26–33.
+Feldman Z and Domshlak C (2014) Simple regret optimization
+in online planning for Markov decision processes. Journal of
+Artiﬁcial Intelligence Research 51: 165–205.
+Gan SK, Fitch R and Sukkarieh S (2014) Online decentral-
+ized information gathering with spatial–temporal constraints.
+Autonomous Robots 37(1): 1–25.
+Garg S and Ayanian N (2014) Persistent monitoring of stochastic
+spatio-temporal phenomena with a small team of robots. In:
+Proceedings of Robotics: Science and Systems .
+Garivier A and Moulines E (2011) On upper-conﬁdence bound
+policies for switching bandit problems. In: Proceedings of
+International Conference on Algorithmic Learning Theory , pp.
+174–188.
+Gelly S, Kocsis L, Schoenauer M, Sebag M, Silver D, Szepesvári
+C and T eytaud O (2012) The grand challenge of computer Go:
+Monte Carlo tree search and extensions. Communications of
+the ACM 55(3): 106–113.
+Gunawan A, Lau HC and V ansteenwegen P (2016) Orienteer-
+ing problem: A survey of recent variants, solution approaches
+and applications. European Journal of Operational Research
+255(2): 315–332.
+334 The International Journal of Robotics Research 38(2-3)
+Hefferan B, Cliff OM and Fitch R (2016) Adversarial patrolling
+with reactive point processes. In: Proceedings of ARAA Aus-
+tralasian Conference on Robotics and Automation (ACRA) .
+Hollinger G (2015) Long-horizon robotic search and classiﬁca-
+tion using sampling-based motion planning. In: Proceedings of
+Robotics: Science and Systems .
+Hollinger G, Singh S, Djugash J and Kehagias A (2009) Efﬁ-
+cient multi-robot search for a moving target. The International
+Journal of Robotics Research 28(2): 201–219.
+Hollinger GA and Sukhatme GS (2014) Sampling-based robotic
+information gathering algorithms. The International Journal of
+Robotics Research 33(9): 1271–1287.
+Hönig W and Ayanian N (2016) Dynamic multi-target coverage
+with robotic cameras. In: Proceedings of IEEE/RSJ Interna-
+tional Conference on Intelligent Robots and Systems (IROS) ,
+pp. 1871–1878.
+Huber MF , Dencker T , Roschani M and Beyerer J (2012) Bayesian
+active object recognition via gaussian process regression. In:
+Proceedings of IEEE International Conference on Information
+Fusion (FUSION), pp. 1718–1725.
+James S, Konidaris G and Rosman B (2017) An analysis of Monte
+Carlo tree search. In: Proceedings of AAAI Conference on
+Artiﬁcial Intelligence.
+Kahn G, Sujan P , Patil S, et al. (2015) Active exploration using
+trajectory optimization for robotic grasping in the presence of
+occlusions. In: Proceedings of IEEE International Conference
+on Robotics and Automation (ICRA) , pp. 4783–4790.
+Kartal B, Godoy J, Karamouzas I and Guy SJ (2015) Stochastic
+tree search with useful cycles for patrolling problems. In: Pro-
+ceedings of IEEE International Conference on Robotics and
+Automation (ICRA), pp. 1289–1294.
+Kassir A, Fitch R and Sukkarieh S (2015) Communication-aware
+information gathering with dynamic information ﬂow. The
+International Journal of Robotics Research 34(2): 173–200.
+Kocsis L and Szepesvári C (2006) Bandit based Monte-Carlo
+planning. In: Proceedings of European Conference on Machine
+Learning (ECML), pp. 282–293.
+Kocsis L, Szepesvári C and Willemson J (2006) Improved Monte-
+Carlo search. T echnical report, University of Tartu.
+Koller D and Friedman N (2009) Probabilistic graphical models:
+Principles and techniques. Cambridge, MA: MIT Press.
+Krause A, Singh A and Guestrin C (2008) Near-optimal sensor
+placements in Gaussian processes: Theory, efﬁcient algorithms
+and empirical studies. Journal of Machine Learning Research
+9: 235–284.
+Kulkarni AJ and Tai K (2010) Probability collectives: A multi-
+agent approach for solving combinatorial optimization prob-
+lems. Applied Soft Computing 10(3): 759–771.
+Kumar A, Zilberstein S and Toussaint M (2015) Probabilistic
+inference techniques for scalable multiagent decision making.
+Journal of Artiﬁcial Intelligence Research 53: 223–270.
+Lauri M, Atanasov N, Pappas G and Ritala R (2015) Active object
+recognition via Monte Carlo tree search. In: Proceedings of
+IEEE ICRA W orkshop on Beyond Geometric Constraints.
+Lauri M and Ritala R (2016) Planning for robotic exploration
+based on forward simulation. Robotics and Autonomous Sys-
+tems 83: 15–31.
+Lindhé M and Johansson KH (2013) Exploiting multipath fad-
+ing with a mobile robot. The International Journal of Robotics
+Research 32(12): 1363–1380.
+Liu L, Michael N and Shell DA (2015) Communication con-
+strained task allocation with optimized local task swaps.
+Autonomous Robots 39(3): 429–444.
+Marchant R, Ramos F and Sanner S (2014) Sequential Bayesian
+optimisation for spatial-temporal monitoring. In: Proceed-
+ings of Conference on Uncertainty in Artiﬁcial Intelligence
+(UAI).
+Nemhauser GL, W olsey LA and Fisher ML (1978) An analysis
+of approximations for maximizing submodular set functions–I.
+Mathematical Programming 14(1): 265–294.
+Nguyen J, Lawrance N, Fitch R and Sukkarieh S (2015) Real-
+time path planning for long-term information gathering with
+an aerial glider. Autonomous Robots 40(6): 1017–1039.
+Noon CE and Bean JC (1989) An efﬁcient transformation of
+the generalized traveling salesman problem . T echnical Report
+89–36, Department of Industrial and Operations Engineering,
+University of Michigan.
+Oliehoek F A and Amato C (2016) A Concise Introduction to
+Decentralized POMDPs. Dordrecht: Springer.
+Omidshaﬁei S, Agha-Mohammadi AA, Amato C, Liu SY , How
+JP and Vian J (2017) Decentralized control of multi-robot par-
+tially observable Markov decision processes using belief space
+macro-actions. The International Journal of Robotics Research
+36(2): 231–258.
+Ondruska P , Gurau C, Marchegiani L, Tong CH and Posner
+I (2015) Scheduled perception for energy-efﬁcient path fol-
+lowing. In: Proceedings of IEEE International Conference on
+Robotics and Automation (ICRA) , pp. 4799–4806.
+Otte M and Correll N (2013) Any-com multi-robot path-planning:
+Maximizing collaboration for variable bandwidth. In: Dis-
+tributed Autonomous Robotic Systems: The 10th International
+Symposium. Berlin: Springer, pp. 161–173.
+Patten T (2017) Active Object Classiﬁcation from 3D Range Data
+with Mobile Robots . PhD Thesis, The University of Sydney.
+Patten T , Fitch R and Sukkarieh S (2013) Large-scale near-
+optimal decentralised information gathering with multiple
+mobile robots. In: Proceedings of ARAA Australasian Confer-
+ence on Robotics and Automation (ACRA) .
+Patten T , Kassir A, Martens W , Douillard B, Fitch R and Sukkarieh
+S (2015) A Bayesian approach for time-constrained 3D outdoor
+object recognition. In: Proceedings of ICRA 2015 W orkshop on
+Scaling Up Active Perception.
+Patten T , Martens W and Fitch R (2017) Monte Carlo plan-
+ning for active object classiﬁcation. Autonomous Robots doi:
+10.1007/s10514-017-9626-0.
+Patten T , Zillich M, Fitch R, Vincze M and Sukkarieh S (2016)
+Viewpoint evaluation for online 3-D active object classiﬁca-
+tion. IEEE Robotics and Automation Letters 1(1): 73–81.
+Rahmattalabi A, Chung JJ, Colby M and Tumer K (2016) D++:
+Structural credit assignment in tightly coupled multiagent
+domains. In: Proceedings of IEEE/RSJ International Confer-
+ence on Intelligent Robots and Systems (IROS), pp. 4424–4429.
+Regev T and Indelman V (2016) Multi-robot decentralized belief
+space planning in unknown environments via efﬁcient re-
+evaluation of impacted paths. In: Proceedings of IEEE/RSJ
+International Conference on Intelligent Robots and Systems
+(IROS).
+Rezek I, Leslie DS, Reece S, et al. (2008) On similarities between
+inference in game theory and machine learning. Journal of
+Artiﬁcial Intelligence Research 33: 259–283.
+Best et al. 335
+Sadeghi A and Smith SL (2017) Heterogeneous task allocation
+and sequencing via decentralized large neighborhood search.
+Unmanned Systems, in press.
+Silver D and V eness J (2010) Monte-Carlo planning in large
+POMDPs. In: Lafferty JD, Williams CKI, Shawe-Taylor J,
+Zemel RS and Culotta A (eds.) Advances in Neural Infor-
+mation Processing Systems 23 . Curran Associates, Inc., pp.
+2164–2172.
+Singh A, Krause A, Guestrin C and Kaiser WJ (2009) Efﬁcient
+informative sensing using multiple robots. Journal of Artiﬁcial
+Intelligence Research 34(1): 707–755.
+Slade P , Culbertson P , Sunberg Z and Kochenderfer MJ (2017)
+Simultaneous active parameter estimation and control using
+sampling-based Bayesian reinforcement learning. In: Proceed-
+ings of IEEE/RSJ International Conference on Intelligent
+Robots and Systems (IROS) .
+Somani A, Y e N, Hsu D and Lee WS (2013) DESPOT: Online
+POMDP planning with regularization. In: Burges CJC, Bot-
+tou L, W elling M, Ghahramani Z and W einberger KQ (eds.)
+Advances in Neural Information Processing Systems 26.C u r r a n
+Associates, Inc., pp. 1772–1780.
+Spaan MTJ, Gordon GJ and Vlassis N (2006) Decentralized plan-
+ning under uncertainty for teams of communicating agents. In:
+Proceedings of International Joint Conference on Autonomous
+Agents and Multiagent Systems .
+Stranders R, Farinelli A, Rogers A and Jennings N (2009) Decen-
+tralised coordination of mobile sensors using the max-sum
+algorithm. In: Proceedings of International Joint Conference
+on Artiﬁcial Intelligence (IJCAI) , pp. 299–304.
+van Hoof H, Kroemer O and Peters J (2014) Probabilistic segmen-
+tation and targeted exploration of objects in cluttered environ-
+ments. IEEE Transactions on Robotics 30(5): 1198–1209.
+V ansteenwegen P , Souffriau W and Oudheusden DV (2011) The
+orienteering problem: A survey. European Journal of Opera-
+tional Research 209(1): 1–10.
+Waldock A and Nicholson D (2007) Cooperative decentralised
+data fusion using probability collectives. In: Proceedings of
+AAMAS W orkshop on Agent Technology for Sensor Networks.
+W olpert DH and Bieniawski S (2004) Distributed control by
+Lagrangian steepest descent. In: Proceedings of IEEE Confer-
+ence on Decision and Control (CDC) , pp. 1562–1567.
+W olpert DH, Bieniawski SR and Rajnarayan DG (2013) Prob-
+ability collectives in optimization. In Handbook of Statistics
+31: Machine Learning: Theory and Applications . Amsterdam:
+Elsevier, pp. 61–99.
+W olpert DH, Strauss CEM and Rajnarayan D (2006) Advances
+in distributed optimization using probability collectives.
+Advances in Complex Systems 9(4): 383–436.
+Wu K, Ranasigne R and Dissanayake G (2015) Active recognition
+and pose estimation of household objects in clutter. In: Pro-
+ceedings of IEEE International Conference on Robotics and
+Automation (ICRA), pp. 4230–4237.
+Xing EP , Jordan MI and Russell S (2004) Graph partition strate-
+gies for generalized mean ﬁeld inference. In: Proceedings of
+Conference on Uncertainty in Artiﬁcial Intelligence (UAI) , pp.
+602–610.
+Xu Z, Fitch R, Underwood J and Sukkarieh S (2013) Decen-
+tralized coordinated tracking with mixed discrete-continuous
+decisions. Journal of Field Robotics 30(5): 717–740.
+Y edidia JS, Freeman WT and W eiss Y (2005) Constructing
+free-energy approximations and generalized belief propagation
+algorithms. IEEE Transactions on Information Theory 51(7):
+2282–2312.
+Y u J, Schwager M and Rus D (2016) Correlated orienteering prob-
+lem and its application to persistent monitoring tasks. IEEE
+Transactions on Robotics 32(5): 1106–1118.
+Zlot R, Stentz A, Dias M and Thayer S (2002) Multi-robot explo-
+ration controlled by a market economy. In: Proceedings of
+IEEE International Conference on Robotics and Automation
+(ICRA), pp. 3016–3023.
+Appendix A: Proofs
+A.1. Proof of Lemma 1
+Proof. W e follow the proof of Theorem 1 of Garivier and
+Moulines (2011), with minor modiﬁcations to account for
+the transitory periods T0, Tp discussed in Theorem 2 of Koc-
+sis et al. (2006). Note that in order to simplify notation, we
+substitute temporal functions (e.g. ui( γ)f o rti( γ)) when the
+index u is used instead of t.
+Fix the index i of a suboptimal arm. Let
+A0( t,ϵ,γ) = min{ti( γ) | ct,ti ( γ) ≤(1 − ϵ) /Delta1i,t/2}
+Thus, by the deﬁnition of ct,ti ( γ),
+A0( t,ϵ,γ) =
+16C2
+p log t( γ)
+(1 − ϵ)2 /Delta12
+i,t
+We l e tA( t,ϵ,γ) = max( A0( t,ϵ,γ), T0( ϵ), Tp) . Then the
+number of times a suboptimal arm i is played is
+˜Ti( t) = 1 +
+t∑
+u=K+1
+1{u:(Iu=i̸=i∗u )∧(ui(γ)<A(u,ϵ,γ))}
++
+t∑
+u=K+1
+1{u:(Iu=i̸=i∗u )∧(ui(γ)≥A(u,ϵ,γ))}
+Further, let
+D( γ) =
+log
+(
+(1 − γ) C2
+p log(K( γ))
+)
+log(γ)
+From Garivier and Moulines (2011), we have
+˜Ti( t) ≤ 1 +⌈ (1 − γ) t⌉A( t,ϵ,γ) γ− 1/(1−γ)
++ ϒtD( γ) +
+t∑
+u=K+1
+1{u:(Iu=i̸=i∗u )∧(ui(γ)≥A(u,ϵ,γ))} (19)
+for any positive A( t,ϵ,γ) and D( γ). As in Garivier and
+Moulines (2011), there are three conditions under which
+a suboptimal arm will be played when ti( γ) ≥ A( t,ϵ,γ)
+(following a breakpoint):
+{t :( It = i ̸= i∗
+t ) ∧( ti( γ) ≥ A( t,ϵ,γ)) }
+⊆
+⎧
+⎪⎨
+⎪⎩
+{t :( μ∗
+t − μi,t < 2ct,ti ( γ)) ∧( ti( γ) ≥ A( t,ϵ,γ)) }
+∪{t : ¯X∗
+t ( γ) ≤ μ∗
+t − ct,ti∗ ( γ) }
+∪{t : ¯Xi,t( γ) ≥ μi,t + ct,ti ( γ) }
+336 The International Journal of Robotics Research 38(2-3)
+W e start with the ﬁrst case, following the logic of Theo-
+rem 2 in Kocsis et al. (2006). Since ct,ti ( γ) decreases in ti
+and ti( γ) ≥ A( t, ϵ, γ) ≥ A0( t,ϵ,γ), we have that ct,ti ( γ) ≤
+ct,A0(t,ϵ,γ)( γ) and, thus, for the choice of A0( t,ϵ,γ),
+ct,ti ( γ) ≤ 2
+√
+C2p log t( γ) /A0( t,ϵ,γ) ≤ /Delta1i,t/2
+Thus, the ﬁrst case can not occur when ti( γ) ≥ A0( t,ϵ,γ).
+Now, when ti( γ) ≥ T0( ϵ), we have that |δi,t|≤ ϵ/Delta1i,t/2.
+Since μ∗ − μi ≥ /Delta1i,t, t = 1, 2,... ,w eh a v e
+μ∗
+t − μi,t − 2ct,ti ( γ) ≥ /Delta1i,t −| δ∗
+t |− δi,t − 2ct,ti ( γ)
+≥ /Delta1i,t − ϵ/Delta1i,t− (1 − ϵ) /Delta1i,t
+= 0
+Thus, the set is empty (i.e. event ( μ∗
+t − μi,t <
+2ct,ti ( γ)) ∧( ti( γ) ≥ A( t,ϵ,γ) ) never occurs).
+W e now examine the probability of the second and third
+cases occurring. Recall that Mi( t) denotes the number of
+pulls of arm i after the most recent breakpoint. Then, under
+Assumption 1, when Mi( t) ≥ Tp ≤ A( t,ϵ,γ) we can exploit
+Theorem 18 of Garivier and Moulines (2011) to complete
+the proof. The probability of poorly estimating the mean
+payoffs is now upper bounded as (Garivier and Moulines,
+2011)
+P
+γ
+(¯Xi,t( γ) ≥ μi,t + ct,ti ( γ)
+)
+≤(1 − γ)− 1 − K +
+⌈ log 1
+1−γ
+log( 1+ η)
+⌉
+(1 − γ) t
+1 − γ1/(1−γ)
+for all positive η. Substituting this result into (19) and tak-
+ing expectations of both sides gives (Garivier and Moulines,
+2011)
+Eγ[˜Ti( t)] ≤ C1(1 − γ) t + C2
+E[ϒt]
+1 − γ log 1
+1 − γ (20)
+where
+C1 =
+32
+√
+2C2
+p log 1
+1−γ
+(1 − ϵ)2 /Delta12
+i,tγ1/(1−γ) + T0( ϵ)
+2
+√
+2
++ 4
+(1 − 1
+e )l o g
+(
+1 + 4
+√
+1 − 1/2C2p
+)
+and
+C2 = γ − 1
+log( 1− γ)l o gγ × log ( 1− γ) C2
+p log K( γ)
+When γ goes to 1, C2 → 1 and
+C1 →
+16eC2
+p log 1
+1−γ
+(1 − ϵ)2 /Delta12
+i,t
++ T0( ϵ) +Tp
++ 2
+(1 − 1
+e )l o g
+(
+1 + 4
+√
+1 − 1/2C2p
+)
+Finally, we can minimize the expected number of times a
+suboptimal action is taken by setting the discount factor to
+γ
+t = 1 − √ E[ϒt]/16t. Selecting this discount factor gives
+Eγ[˜Ti( t)] = O
+(√ E[ϒt]t( C2
+p log t + T0( ϵ) +Tp)
+)
+and thus
+we obtain the bound (14) for t > 1.
+Remark 3. A common misconception is that the parameter
+Cp should be set to 1 /
+√
+2 in order to satisfy the Chernoff–
+Hoeffding bound (Kocsis and Szepesvári, 2006; Browne
+et al., 2012). However, in the analysis by Auer et al. (2002)
+and Kocsis et al. (2006), setting C
+p to 1/
+√
+2 simply allows
+the tail inequality to be bounded by t− 4 and, thus, converge
+(Auer et al., 2002). Alternatively, we can select any positive
+Cp to ensure that the tail inequality is bounded by a negative
+exponent on t. As a result, we leave the value Cp > 1/
+√
+8.
+A.2. Proof of Lemma 2
+Proof. The proof is a slightly generalized version of Theo-
+rem 3 of Kocsis et al. (2006) to allow for switching optimal
+arms.
+Without loss of generality we assume that there is
+a unique “best arm” at any given time t. W e denote
+the index of this arm by i∗
+t . By the triangle inequality,⏐⏐μ∗ − Eγ[ ¯Xt]
+⏐⏐ ≤
+⏐⏐μ∗ − μ∗
+t
+⏐⏐ +
+⏐⏐μ∗
+t − Eγ[ ¯Xt]
+⏐⏐ =
+⏐⏐δ∗
+t
+⏐⏐ +⏐⏐ ¯μ∗
+t − Eγ[ ¯Xt]
+⏐⏐. W e bound the last term as follows:
+t
+⏐⏐μ∗
+t − Eγ[ ¯Xt]
+⏐⏐ =
+⏐⏐
+⏐⏐⏐
+t∑
+u=1
+Eγ[X∗
+u ] − Eγ
+[ K∑
+i=1
+Ti( t) ¯Xi,t
+]⏐⏐
+⏐⏐⏐
+=
+⏐⏐
+⏐
+⏐⏐
+t∑
+u=1
+Eγ[X∗
+u ] − Eγ
+[
+T∗( t) ¯X∗
+t
+]
+⏐⏐
+⏐
+⏐⏐
++ E
+γ
+[ K∑
+i=1
+˜Ti( t) ¯Xi,t
+]
+since 0 ≤ ¯Xi,t ≤ 1, the last term is bounded by
+O( K√ E[ϒt]/t( C2
+p log t + T0 + Tp) ). Again, since Xi,t ≤
+1, we can deduce that Eγ
+[
+T∗( t) ¯X∗
+t
+]
+≤ Eγ [T∗( t) ] ≤∑t
+u=1 Eγ[X∗
+u ] ≤ t and upper bound the ﬁrst term by
+Eγ[t − T∗( t)] =
+K∑
+i=1
+Eγ
+[˜Ti( t)
+]
+= O( K
+√
+E[ϒt]/t( C2
+p log t + T0 + Tp))
+Collecting terms yields the bound in (15).
+A.3. Proof of Lemma 3
+Proof. W e modify the proof of Theorem 5 of Kocsis et al.
+(2006) slightly by using Lemma 5 in Appendix B to account
+for the bound on E[˜Ti( t)] .
+Using the same notation as Kocsis et al. (2006), Zt is
+the indicator variable that a suboptimal arm was pulled at
+time t. It is important to note that this result follows by
+Best et al. 337
+letting ti ≥ Tp, i.e. we are concerned with the process
+{Zt}t≥Tp . At this stage, Zt is independent of Zt+1,... , Zt,
+given Z1, ... , Zt− 1 and, thus, Lemma 11 of Kocsis et al.
+(2006) holds. Then, following Theorem 5 of Kocsis et al.
+(2006), it will sufﬁce to prove that there exists a t such that
+at ≤(2/9)/Gamma1t and Rt ≤(4/9)/Gamma1t.
+By Lemma 1, E[∑t
+u=1 Zu] ≤ O( K√ E[ϒt]/t(l o gt+T0 +
+Tp) ), hence at, Rt = O( K√ E[ϒt]/t(l o gt+T0 +Tp) ). Thus,
+since /Gamma1t = O( E[ϒt]t) and at, Rt = O( √ E[ϒt]t log t), the
+index t exists.
+A.4. Proof of Lemma 4
+Proof. Since limt→∞ ϒt = supt ϒt < ∞ and limt→∞ γt =
+1, for large t without loss of generality we have a unique
+“best arm” i∗ = i∗
+t and the algorithm becomes UCB1
+applied to a non-stationary bandit problem. Theorems 4
+and 6 of Kocsis et al. (2006) yields the result.
+Appendix B: Technical results
+Lemma 5. Let Zi, Fi, ai be as in Lemma 13 of Kocsis et al.
+(2006). Let {Xi} be an independent and identically dis-
+tributed sequence with mean μ, and {Yi} an Fi-adapted
+process. W e assume that both X i and Y i lie in the [0, 1]
+interval. Consider the partial sums
+St =
+t∑
+u=1
+(1 − Zu) Xu + ZuYu
+Fix an arbitrary 0 <ε ≤ 1,l e t /Gamma1t = 9E[ϒt]t
+√
+2l o g (2/ε)
+and let
+Rt = E
+[∑
+u
+Xu
+]
+− E[St]
+Then for t such that a t ≤(2/9)/Gamma1t and |Rt|≤ (4/9)/Gamma1t,
+P( |St − E[St]|≥ /Gamma1t) ≤ ε (21)
+Proof. The proof follows Lemma 14 of Kocsis et al. (2006).
+W e show thatP( St − E[St] ≥ /Gamma1t) ≤ εas P( St − E[St] ≤
+/Gamma1t) ≤ εis proved analogously. Let p = P( St ≥ E[St] + /Gamma1t).
+We h aveSt = ∑t
+u=1 Xu + ∑t
+u=1 Zu( Yu − Xu) ≤ ∑t
+u=1 Xu +
+2 ∑t
+u=1 Zu. Therefore,
+p ≤ P
+( t∑
+u=1
+Xu + 2
+t∑
+u=1
+Zu ≥ E
+[ t∑
+u=1
+Xu
+]
+− Rt + /Gamma1t
+)
+Using the inequality I( A + B ≥ /Gamma1) ≤ I( A ≥ α/Gamma1) +I( B ≥
+(1 − α) /Gamma1) that holds for any A, B ≥ 0, 0 ≤ α ≤ 1 we obtain
+p ≤ P
+( t∑
+u=1
+Xu ≥ E
+[ t∑
+u=1
+Xu
+]
++(1/9)/Gamma1t
+)
++ P
+(
+2
+t∑
+u=1
+Zu ≥(8/9)/Gamma1− Rt
+)
+Using the Hoeffding–Azuma inequality, the ﬁrst term can
+be bounded by
+P
+( t∑
+u=1
+Xu ≥ E
+[ t∑
+u=1
+Xu
+]
++(1/9)/Gamma1tt
+)
+≤ exp
+(
+− 2(/Gamma1t/9)2
+t
+)
+=( ε/2)4t
+≤ ε/2
+for n ≥ 1 and 0 <ε< 1. Since by assumption |Rt|≤
+(4/9)/Gamma1, the second term can be upper bounded by
+P
+(
+2
+t∑
+u=1
+Zu ≥(4/9)/Gamma1t
+)
+= P
+( t∑
+u=1
+Zu ≥(2/9)/Gamma1t
+)
+By Lemma 13 of Kocsis et al. (2006), this term is bounded
+by ( ε/2)n ≤ ε/2f o r t ≥ 1 and 0 <ε< 1. Collecting terms
+yields the ﬁrst inequality (21).

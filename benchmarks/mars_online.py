@@ -359,34 +359,68 @@ def _qmdp_values_for_path(data_file: str, horizon: int) -> Tuple[float, ...]:
     return tuple(values)
 
 
-def best_qmdp_joint_action(
-    belief: Sequence[float],
+@lru_cache(maxsize=None)
+def _qmdp_action_values_for_path(
+    data_file: str,
     remaining_horizon: int,
-    model: MarsModel,
-) -> int:
+) -> Tuple[Tuple[float, ...], ...]:
+    model = MarsModel(Path(data_file))
     future_values = (
-        _qmdp_values_for_path(str(DEFAULT_DATA_FILE), remaining_horizon - 1)
+        _qmdp_values_for_path(data_file, remaining_horizon - 1)
         if remaining_horizon > 1
         else (0.0,) * N_STATES
     )
 
-    best_a = 0
-    best_v = -math.inf
-
+    rows: List[Tuple[float, ...]] = []
     for a in range(N_ACTS):
-        total = 0.0
-
-        for s, b_s in enumerate(belief):
-            if b_s <= 0.0:
-                continue
-
+        vals: List[float] = []
+        for s in range(N_STATES):
             base = a * N_STATES * N_STATES + s * N_STATES
             q_s = model.reward(s, a)
             q_s += sum(
                 model.T[base + sp] * future_values[sp]
                 for sp in range(N_STATES)
             )
-            total += b_s * q_s
+            vals.append(q_s)
+        rows.append(tuple(vals))
+
+    return tuple(rows)
+
+
+def best_qmdp_joint_action(
+    belief: Sequence[float],
+    remaining_horizon: int,
+    model: MarsModel,
+) -> int:
+    action_values = _qmdp_action_values_for_path(
+        str(DEFAULT_DATA_FILE),
+        remaining_horizon,
+    )
+
+    best_a = 0
+    best_v = -math.inf
+
+    for a in range(N_ACTS):
+        # TESTING: previous implementation recomputed the transition backup
+        # for every belief/default-policy query. The cached action_values table
+        # is the same QMDP backup, reused across histories.
+        #
+        # total = 0.0
+        # for s, b_s in enumerate(belief):
+        #     if b_s <= 0.0:
+        #         continue
+        #     base = a * N_STATES * N_STATES + s * N_STATES
+        #     q_s = model.reward(s, a)
+        #     q_s += sum(
+        #         model.T[base + sp] * future_values[sp]
+        #         for sp in range(N_STATES)
+        #     )
+        #     total += b_s * q_s
+        total = sum(
+            b_s * action_values[a][s]
+            for s, b_s in enumerate(belief)
+            if b_s > 0.0
+        )
 
         if total > best_v:
             best_v = total
@@ -402,27 +436,32 @@ def ranked_qmdp_local_actions(
     rid: int,
     limit: Optional[int] = None,
 ) -> List[int]:
-    future_values = (
-        _qmdp_values_for_path(str(DEFAULT_DATA_FILE), remaining_horizon - 1)
-        if remaining_horizon > 1
-        else (0.0,) * N_STATES
+    action_values = _qmdp_action_values_for_path(
+        str(DEFAULT_DATA_FILE),
+        remaining_horizon,
     )
     scores: Dict[int, float] = {a: -math.inf for a in range(ACT_PER_AGENT)}
 
     for joint_a in range(N_ACTS):
-        total = 0.0
-
-        for s, b_s in enumerate(belief):
-            if b_s <= 0.0:
-                continue
-
-            base = joint_a * N_STATES * N_STATES + s * N_STATES
-            q_s = model.reward(s, joint_a)
-            q_s += sum(
-                model.T[base + sp] * future_values[sp]
-                for sp in range(N_STATES)
-            )
-            total += b_s * q_s
+        # TESTING: previous implementation recomputed the same QMDP backup
+        # inside every ranked-action query.
+        #
+        # total = 0.0
+        # for s, b_s in enumerate(belief):
+        #     if b_s <= 0.0:
+        #         continue
+        #     base = joint_a * N_STATES * N_STATES + s * N_STATES
+        #     q_s = model.reward(s, joint_a)
+        #     q_s += sum(
+        #         model.T[base + sp] * future_values[sp]
+        #         for sp in range(N_STATES)
+        #     )
+        #     total += b_s * q_s
+        total = sum(
+            b_s * action_values[joint_a][s]
+            for s, b_s in enumerate(belief)
+            if b_s > 0.0
+        )
 
         a0, a1 = split_action(joint_a)
         local_a = a0 if rid == 0 else a1
@@ -498,6 +537,25 @@ def make_mars_legal_actions_fn(full_action_space: bool = True):
     return legal_actions
 
 
+def mars_belief_from_local_history(
+    root_belief: Sequence[float],
+    history,
+    rid: int,
+    model: MarsModel,
+    teammate_default: int,
+) -> List[float]:
+    belief = list(root_belief)
+
+    for own_action, local_obs in history:
+        if rid == 0:
+            joint_a = joint_action(own_action, teammate_default)
+        else:
+            joint_a = joint_action(teammate_default, own_action)
+        belief = update_local_belief(belief, joint_a, local_obs, rid, model)
+
+    return belief
+
+
 def make_mars_belief_legal_actions_fn(
     model: MarsModel,
     remaining_horizon: int,
@@ -547,19 +605,51 @@ def make_mars_default_action_fn(
     remaining_horizon: int,
     mode: str,
 ):
-    root_default = heuristic_root_action(
-        root_belief=root_belief,
-        rid=rid,
-        model=model,
-        teammate_default=teammate_default,
-        remaining_horizon=remaining_horizon,
-        mode=mode,
-    )
+    action_cache: Dict[Any, int] = {}
 
     def default_action(history) -> int:
-        if history == ():
-            return root_default
-        return teammate_default
+        # TESTING: previous obs default used QMDP only at the root and then
+        # fell back to teammate_default for every deeper observation history.
+        # That ignored the observations stored in ObsDecMCTS nodes.
+        #
+        # if history == ():
+        #     return root_default
+        # return teammate_default
+        if history in action_cache:
+            return action_cache[history]
+
+        if len(history) > 1:
+            # TESTING: full history-conditioned defaults at every rollout
+            # depth were too slow for Mars because sampled observation
+            # histories are nearly all unique. Keep the observation-node fix
+            # at the first post-root branch and use the cheap prior deeper.
+            action_cache[history] = teammate_default
+            return teammate_default
+
+        local_belief = mars_belief_from_local_history(
+            root_belief=root_belief,
+            history=history,
+            rid=rid,
+            model=model,
+            teammate_default=teammate_default,
+        )
+        rem = max(1, remaining_horizon - len(history))
+        # TESTING: using full QMDP at every deep sampled observation history
+        # made ObsDecMCTS rollouts explode in runtime. Keep the requested root
+        # default mode, but use the cheap local one-step heuristic after the
+        # root; this is still history-conditioned and only affects unexplored
+        # default-policy branches.
+        default_mode = mode if history == () else "one-step"
+        action = heuristic_root_action(
+            root_belief=local_belief,
+            rid=rid,
+            model=model,
+            teammate_default=teammate_default,
+            remaining_horizon=rem,
+            mode=default_mode,
+        )
+        action_cache[history] = action
+        return action
 
     return default_action
 
@@ -742,6 +832,7 @@ def run_obs_planning_step(
             beta_init=args.beta_init,
             beta_decay=args.beta_decay,
             alpha=args.alpha,
+            prefer_default_expansion=True,
             seed=seed + 1009 * rid,
         )
 
@@ -1129,7 +1220,7 @@ def main() -> None:
     parser.add_argument(
         "--action-source",
         choices=["tree", "disc_tree", "policy", "visits", "policy_value", "policy_marginal"],
-        default="tree",
+        default="policy_marginal",
     )
     parser.add_argument(
         "--planner",

@@ -118,7 +118,7 @@ def test_obs_decmcts_distribution_actions_and_depths_are_valid():
         assert planner.q
         assert sum(planner.q.values()) == pytest.approx(1.0)
         assert all(p >= 0.0 for p in planner.q.values())
-        assert planner.best_action((), source="tree") in [0, 1]
+        assert planner.best_action(()) in [0, 1]
 
         nodes = []
         _collect_obs_nodes(planner.root, nodes)
@@ -127,6 +127,70 @@ def test_obs_decmcts_distribution_actions_and_depths_are_valid():
 
         other_id = 1 - rid
         assert planner.received_dists[other_id]
+
+
+def test_obs_decmcts_distribution_update_moves_mass_to_better_policy():
+    planner = ObsDecMCTS(
+        robot_id=0,
+        robot_ids=[0, 1],
+        root_belief=[0.5, 0.5],
+        model=TinyModel(),
+        legal_actions_fn=_obs_legal_actions,
+        default_action_fn=_obs_default,
+        default_action_fns_by_robot={0: _obs_default, 1: _obs_default},
+        horizon=1,
+        tau=1,
+        num_policies=2,
+        num_samples=1,
+        alpha=0.1,
+        beta_init=2.0,
+        seed=7,
+    )
+    good_key = ((((), 1)),)
+    bad_key = ((((), 0)),)
+    planner.X_hat = [good_key, bad_key]
+    planner.q = {good_key: 0.5, bad_key: 0.5}
+    planner.min_reward = 0.0
+    planner.max_reward = 10.0
+
+    def fixed_expectation(fixed_policy_key):
+        if fixed_policy_key is None:
+            return 5.0
+        return 10.0 if fixed_policy_key == good_key else 0.0
+
+    planner._estimate_expectation = fixed_expectation
+    planner._update_distribution()
+
+    assert planner.q[good_key] > 0.5
+    assert planner.q[bad_key] < 0.5
+    assert sum(planner.q.values()) == pytest.approx(1.0)
+
+
+def test_obs_decmcts_value_initialized_q_prefers_higher_score():
+    planner = ObsDecMCTS(
+        robot_id=0,
+        robot_ids=[0, 1],
+        root_belief=[0.5, 0.5],
+        model=TinyModel(),
+        legal_actions_fn=_obs_legal_actions,
+        default_action_fn=_obs_default,
+        default_action_fns_by_robot={0: _obs_default, 1: _obs_default},
+        horizon=1,
+        tau=1,
+        num_policies=2,
+        num_samples=1,
+        seed=11,
+    )
+    good_key = ((((), 1)),)
+    bad_key = ((((), 0)),)
+
+    q = planner._value_initialized_q(
+        [good_key, bad_key],
+        {good_key: 10.0, bad_key: 0.0},
+    )
+
+    assert q[good_key] > q[bad_key]
+    assert sum(q.values()) == pytest.approx(1.0)
 
 
 def test_belief_obs_decmcts_distribution_beliefs_and_depths_are_valid():
@@ -158,7 +222,7 @@ def test_belief_obs_decmcts_distribution_beliefs_and_depths_are_valid():
         assert planner.q
         assert sum(planner.q.values()) == pytest.approx(1.0)
         assert all(p >= 0.0 for p in planner.q.values())
-        assert planner.best_action([0.5, 0.5], source="tree") in [0, 1]
+        assert planner.best_action([0.5, 0.5]) in [0, 1]
 
         nodes = []
         _collect_belief_nodes(planner.root, nodes)
@@ -191,7 +255,7 @@ def test_belief_obs_decmcts_repeated_seed_is_deterministic():
             seed=99,
         )
         planner.iterate(3)
-        return planner.best_action([0.5, 0.5], source="tree"), planner.X_hat, planner.q
+        return planner.best_action([0.5, 0.5]), planner.X_hat, planner.q
 
     a1, x1, q1 = run_once()
     a2, x2, q2 = run_once()

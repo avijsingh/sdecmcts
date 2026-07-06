@@ -97,8 +97,8 @@ class TigerModel:
                 for sp in range(N_STATES):
                     for o in range(N_OBS):
                         b0, b1 = o % OBS_PER_AGENT, o // OBS_PER_AGENT
-                        p0 = 0.75 if b0 == sp else 0.25
-                        p1 = 0.75 if b1 == sp else 0.25
+                        p0 = 0.85 if b0 == sp else 0.15
+                        p1 = 0.85 if b1 == sp else 0.15
                         self._set_o(8, sp, o, p0 * p1)
             else:
                 # Any open action: tiger resets uniformly, uniform obs
@@ -129,11 +129,11 @@ class TigerModel:
                     b0, b1 = o % OBS_PER_AGENT, o // OBS_PER_AGENT
                     if a0(a) == 2 and a1(a) != 2:
                         # Agent 0 listens, agent 1 opens
-                        p_listen = 0.75 if b0 == sp else 0.25
+                        p_listen = 0.85 if b0 == sp else 0.15
                         self._set_o(a, sp, o, p_listen * 0.5)
                     elif a1(a) == 2 and a0(a) != 2:
                         # Agent 1 listens, agent 0 opens
-                        p_listen = 0.75 if b1 == sp else 0.25
+                        p_listen = 0.85 if b1 == sp else 0.15
                         self._set_o(a, sp, o, 0.5 * p_listen)
 
     def sample_next_state(self, s, joint_a):

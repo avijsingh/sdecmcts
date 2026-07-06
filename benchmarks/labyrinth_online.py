@@ -818,6 +818,25 @@ def make_belief_default_action_fn(
     return default_action
 
 
+def labyrinth_belief_from_local_history(
+    root_belief: Sequence[float],
+    history,
+    rid: int,
+    model: LabyrinthModel,
+    teammate_default: int,
+) -> List[float]:
+    belief = list(root_belief)
+
+    for own_action, local_obs in history:
+        if rid == 0:
+            action = joint_action(own_action, teammate_default, model.act_per_agent)
+        else:
+            action = joint_action(teammate_default, own_action, model.act_per_agent)
+        belief = update_local_belief(belief, action, local_obs, rid, model)
+
+    return belief
+
+
 def make_obs_default_action_fn(
     root_belief: Sequence[float],
     rid: int,
@@ -825,10 +844,37 @@ def make_obs_default_action_fn(
     remaining_horizon: int,
     fallback: int,
 ):
-    root_default = qmdp_local_action(root_belief, rid, model, remaining_horizon)
+    # TESTING: previous obs default used the QMDP root action only at history
+    # () and then returned fallback for every deeper observation history.
+    #
+    # root_default = qmdp_local_action(root_belief, rid, model, remaining_horizon)
+    action_cache: Dict[Any, int] = {}
 
     def default_action(history) -> int:
-        return root_default if history == () else fallback
+        # TESTING:
+        # return root_default if history == () else fallback
+        if history in action_cache:
+            return action_cache[history]
+
+        if len(history) > 1:
+            # TESTING: full history-conditioned QMDP defaults at every rollout
+            # depth are expensive because sampled observation histories rarely
+            # repeat. Preserve the first observation-conditioned branch and use
+            # the configured cheap fallback deeper in rollouts.
+            action_cache[history] = fallback
+            return fallback
+
+        local_belief = labyrinth_belief_from_local_history(
+            root_belief=root_belief,
+            history=history,
+            rid=rid,
+            model=model,
+            teammate_default=fallback,
+        )
+        rem = max(1, remaining_horizon - len(history))
+        action = qmdp_local_action(local_belief, rid, model, rem)
+        action_cache[history] = action
+        return action
 
     return default_action
 
@@ -1075,6 +1121,7 @@ def run_obs_planning_step(
             beta_init=args.beta_init,
             beta_decay=args.beta_decay,
             alpha=args.alpha,
+            prefer_default_expansion=True,
             seed=seed + 1009 * rid,
         )
 
@@ -1390,7 +1437,7 @@ def main() -> None:
     parser.add_argument(
         "--action-source",
         choices=["tree", "disc_tree", "policy", "visits", "policy_value", "policy_marginal"],
-        default="tree",
+        default="policy_marginal",
     )
     parser.add_argument(
         "--env-comm-mode",

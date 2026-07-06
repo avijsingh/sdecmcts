@@ -135,12 +135,12 @@ class TigerModel:
                     for sp in range(N_STATES):
                         self._set_t(a, s, sp, 1.0 if sp == s else 0.0)
 
-                # MOD='C': both-listen local observations are 0.75/0.25.
+                # MOD='C': both-listen local observations are 0.85/0.15.
                 for sp in range(N_STATES):
                     for o in range(N_OBS):
                         o0, o1 = self.split_obs(o)
-                        p0 = 0.75 if o0 == sp else 0.25
-                        p1 = 0.75 if o1 == sp else 0.25
+                        p0 = 0.85 if o0 == sp else 0.15
+                        p1 = 0.85 if o1 == sp else 0.15
                         self._set_o(a, sp, o, p0 * p1)
                 continue
 
@@ -166,7 +166,7 @@ class TigerModel:
                 for o in range(N_OBS):
                     self._set_o(a, sp, o, 1.0 / N_OBS)
 
-        # MOD='C': exactly one listener gets 0.75/0.25; non-listener gets uniform.
+        # MOD='C': exactly one listener gets 0.85/0.15; non-listener gets uniform.
         for a in range(N_ACTS):
             a0, a1 = self.split_action(a)
             if not ((a0 == LISTEN) ^ (a1 == LISTEN)):
@@ -176,10 +176,10 @@ class TigerModel:
                 for o in range(N_OBS):
                     o0, o1 = self.split_obs(o)
                     if a0 == LISTEN:
-                        p_listen = 0.75 if o0 == sp else 0.25
+                        p_listen = 0.85 if o0 == sp else 0.15
                         self._set_o(a, sp, o, p_listen * 0.5)
                     else:
-                        p_listen = 0.75 if o1 == sp else 0.25
+                        p_listen = 0.85 if o1 == sp else 0.15
                         self._set_o(a, sp, o, 0.5 * p_listen)
 
     def transition_prob(self, s: int, a: int, sp: int) -> float:
@@ -387,9 +387,19 @@ def make_local_utility_fn(
         raise ValueError("mode must be 'difference' or 'global'.")
 
     b0 = list(belief)
+    value_cache: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], float] = {}
 
     def g(joint: Dict[int, List[int]]) -> float:
-        return expected_open_loop_return(b0, joint, model, horizon)
+        key = (
+            tuple(joint.get(0, ())),
+            tuple(joint.get(1, ())),
+        )
+        cached = value_cache.get(key)
+        if cached is not None:
+            return cached
+        value = expected_open_loop_return(b0, joint, model, horizon)
+        value_cache[key] = value
+        return value
 
     def local_utility(joint: Dict[int, List[int]]) -> float:
         if mode == "global":
@@ -507,8 +517,8 @@ def tiger_belief_from_local_history(history: History) -> List[float]:
     for action, obs in history:
         if action == LISTEN:
             b = normalize_belief([
-                b[TIGER_LEFT] * (0.75 if obs == TIGER_LEFT else 0.25),
-                b[TIGER_RIGHT] * (0.75 if obs == TIGER_RIGHT else 0.25),
+                b[TIGER_LEFT] * (0.85 if obs == TIGER_LEFT else 0.15),
+                b[TIGER_RIGHT] * (0.85 if obs == TIGER_RIGHT else 0.15),
             ])
         elif action in (OPEN_LEFT, OPEN_RIGHT):
             # Opening resets the tiger uniformly.
@@ -774,17 +784,14 @@ def run_obs_planning_step(
             robot_ids=[0, 1],
             root_belief=beliefs[rid],
             model=adapter,
-            legal_actions_fn=tiger_legal_actions_from_history,
-            default_action_fn=tiger_default_action_from_history,
-
-            # legal_actions_fn=make_tiger_legal_actions_fn(
-            # root_belief=beliefs[rid],
-            # open_threshold=args.open_threshold,
-            # ),
-            # default_action_fn=make_tiger_default_action_fn(
-            # root_belief=beliefs[rid],
-            # open_threshold=args.open_threshold,
-            # ),
+            legal_actions_fn=make_tiger_legal_actions_fn(
+                root_belief=beliefs[rid],
+                open_threshold=args.open_threshold,
+            ),
+            default_action_fn=make_tiger_default_action_fn(
+                root_belief=beliefs[rid],
+                open_threshold=args.open_threshold,
+            ),
             gamma=args.gamma,
             cp=args.cp,
             horizon=remaining_horizon,
@@ -794,6 +801,11 @@ def run_obs_planning_step(
             beta_init=args.beta_init,
             beta_decay=args.beta_decay,
             alpha=args.alpha,
+            # TESTING: shared seeds can make both decentralized planners sample
+            # highly correlated supports. Restore per-robot offsets while
+            # keeping episode-level determinism.
+            #
+            # seed=seed,
             seed=seed + 1009 * rid,
         )
 
@@ -895,6 +907,7 @@ def run_belief_obs_planning_step(
             tau=args.tau,
             num_policies=args.num_seq,
             num_samples=args.num_samples,
+            score_samples=None if args.score_samples <= 0 else args.score_samples,
             beta_init=args.beta_init,
             beta_decay=args.beta_decay,
             alpha=args.alpha,
@@ -1259,6 +1272,12 @@ def main() -> None:
     parser.add_argument("--tau", type=int, default=100)
     parser.add_argument("--num-seq", type=int, default=10)
     parser.add_argument("--num-samples", type=int, default=20)
+    parser.add_argument(
+        "--score-samples",
+        type=int,
+        default=0,
+        help="MC rollouts per candidate during obs/belief-obs sample-space scoring. 0 reuses --num-samples.",
+    )
     parser.add_argument("--comm-period", type=int, default=1)
     parser.add_argument("--env-comm-period", type=int, default=1)
 
@@ -1287,7 +1306,7 @@ def main() -> None:
     parser.add_argument(
         "--action-source",
         choices=["tree", "disc_tree", "policy", "visits", "policy_value", "policy_marginal"],
-        default="policy",
+        default="policy_marginal",
     )
     parser.add_argument("--debug-obs", action="store_true", help="Print ObsDecMCTS tree, edge, policy-support, and one-step reward diagnostics.")
     parser.add_argument(
@@ -1300,8 +1319,8 @@ def main() -> None:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=1,
-        help="Number of parallel worker processes. Use -1 for all CPU cores.",
+        default=-1,
+        help="Number of parallel worker processes. Use 1 for serial or -1 for all CPU cores.",
     )
 
     args = parser.parse_args()
@@ -1312,7 +1331,8 @@ def main() -> None:
     print(f"horizon={args.horizon}, episodes={args.episodes}")
     print(
         f"planning: outer_iters={args.outer_iters}, tau={args.tau}, "
-        f"num_seq={args.num_seq}, num_samples={args.num_samples}")
+        f"num_seq={args.num_seq}, num_samples={args.num_samples}, "
+        f"score_samples={args.score_samples}")
     print(
         f"utility={args.local_utility}, open_threshold={args.open_threshold}, "
         f"env_comm_period={args.env_comm_period}, seed={args.seed}")
@@ -1350,6 +1370,7 @@ def main() -> None:
     else:
         n_jobs = os.cpu_count() if args.jobs == -1 else args.jobs
         n_jobs = max(1, int(n_jobs))
+        n_jobs = min(n_jobs, args.episodes)
 
         args_dict = vars(args).copy()
 

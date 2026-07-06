@@ -199,6 +199,7 @@ class BeliefObsDecMCTS:
         tau: int = 100,
         num_policies: int = 10,
         num_samples: int = 30,
+        score_samples: Optional[int] = None,
         beta_init: float = 2.0,
         beta_decay: float = 0.995,
         alpha: float = 0.01,
@@ -230,6 +231,7 @@ class BeliefObsDecMCTS:
         self.tau = tau
         self.num_policies = num_policies
         self.num_samples = num_samples
+        self.score_samples = score_samples
         self.beta_init = beta_init
         self.beta = beta_init
         self.beta_decay = beta_decay
@@ -242,6 +244,7 @@ class BeliefObsDecMCTS:
             Tuple[List[float], BeliefKey],
         ] = {}
         self.belief_obj_key_cache: Dict[int, Tuple[Belief, BeliefKey]] = {}
+        self.belief_value_key_cache: Dict[Tuple[float, ...], BeliefKey] = {}
         root_key = self._belief_key(self.root_belief)
         self.root = BeliefNode(
             belief=self.root_belief,
@@ -249,6 +252,8 @@ class BeliefObsDecMCTS:
             depth=0,
             legal_actions=self.legal_actions_fn(self.root_belief, 0),
         )
+        self._all_nodes: List[BeliefNode] = [self.root]
+        self._all_edges: List[BeliefActionEdge] = []
         self.node_table: Dict[Tuple[int, BeliefKey], BeliefNode] = {
             (0, root_key): self.root
         }
@@ -266,7 +271,11 @@ class BeliefObsDecMCTS:
         cached = self.belief_obj_key_cache.get(obj_id)
         if cached is not None and cached[0] is belief:
             return cached[1]
-        key = self.belief_key_fn(belief)
+        value_key = tuple(float(x) for x in belief)
+        key = self.belief_value_key_cache.get(value_key)
+        if key is None:
+            key = self.belief_key_fn(belief)
+            self.belief_value_key_cache[value_key] = key
         self.belief_lookup[key] = list(belief)
         self.belief_obj_key_cache[obj_id] = (belief, key)
         return key
@@ -285,12 +294,14 @@ class BeliefObsDecMCTS:
     ) -> BeliefNode:
         table_key = (depth, belief_key)
         if not self.share_belief_nodes:
-            return BeliefNode(
+            node = BeliefNode(
                 belief=belief,
                 belief_key=belief_key,
                 depth=depth,
                 legal_actions=self.legal_actions_fn(belief, depth),
             )
+            self._all_nodes.append(node)
+            return node
 
         node = self.node_table.get(table_key)
         if node is not None:
@@ -303,6 +314,7 @@ class BeliefObsDecMCTS:
             legal_actions=self.legal_actions_fn(belief, depth),
         )
         self.node_table[table_key] = node
+        self._all_nodes.append(node)
         return node
 
     def _update_belief_cached(
@@ -426,10 +438,14 @@ class BeliefObsDecMCTS:
         self.min_reward = min(self.min_reward, total_return)
         self.max_reward = max(self.max_reward, total_return)
 
+        known_edge_ids = {id(e) for e in self._all_edges}
+        for edge in visited_edges:
+            if id(edge) not in known_edge_ids:
+                self._all_edges.append(edge)
+                known_edge_ids.add(id(edge))
+
         visited_edge_ids = {id(e) for e in visited_edges}
-        all_edges: List[BeliefActionEdge] = []
-        self._collect_edges(self.root, all_edges)
-        for edge in all_edges:
+        for edge in self._all_edges:
             on_path = id(edge) in visited_edge_ids
             if on_path:
                 edge.visits += 1
@@ -437,9 +453,10 @@ class BeliefObsDecMCTS:
             edge.update_discounted(total_return, on_path, self.gamma)
 
         visited_node_ids = {id(n) for n in visited_nodes}
-        all_nodes: List[BeliefNode] = []
-        self._collect_nodes(self.root, all_nodes)
-        for node in all_nodes:
+        nodes: List[BeliefNode] = []
+        self._collect_nodes(self.root, nodes)
+
+        for node in nodes:
             on_path = id(node) in visited_node_ids
             if on_path:
                 node.visits += 1
@@ -528,7 +545,8 @@ class BeliefObsDecMCTS:
     def _select_or_expand_action(self, node: BeliefNode) -> Action:
         if node.untried_actions:
             action = self.rng.choice(node.untried_actions)
-            node.add_action_edge(action)
+            edge = node.add_action_edge(action)
+            self._all_edges.append(edge)
             return action
         return max(node.actions.values(), key=lambda edge: self._ucb(edge, node)).action
 
@@ -643,7 +661,16 @@ class BeliefObsDecMCTS:
             return
 
         scored = [
-            (key, self._score_policy_key(key, n_eval=max(1, self.num_samples)))
+            (
+                key,
+                self._score_policy_key(
+                    key,
+                    n_eval=max(
+                        1,
+                        self.num_samples if self.score_samples is None else self.score_samples,
+                    ),
+                ),
+            )
             for key in candidate_scores.keys()
         ]
         scored.sort(key=lambda kv: kv[1], reverse=True)

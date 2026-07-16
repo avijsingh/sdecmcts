@@ -604,9 +604,12 @@ def update_joint_belief(
     action: int,
     obs: int,
     model: LabyrinthModel,
+    support: Optional[List[Tuple[int, float]]] = None,
 ) -> List[float]:
+    if support is None:
+        support = belief_support(belief)
     pred_accum: Dict[int, float] = {}
-    for s, b_s in belief_support(belief):
+    for s, b_s in support:
         for sp, p in model.transition_dist(s, action):
             pred_accum[sp] = pred_accum.get(sp, 0.0) + b_s * p
 

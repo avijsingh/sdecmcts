@@ -13,6 +13,7 @@ BeliefObsDecMCTS implementations; it does not modify planner internals.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import random
 import re
 import sys
 import time
+from itertools import accumulate
 from contextlib import nullcontext as _nullcontext
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -484,10 +486,29 @@ class LabyrinthObsModelAdapter:
     def __init__(self, model: LabyrinthModel, profiler: Optional[ProfileStats] = None):
         self.model = model
         self.profiler = profiler
+        # id(belief) -> (belief ref, cumulative sums); the ref keeps the list
+        # alive so ids are never recycled while cached.
+        self._belief_cums: Dict[int, Tuple[Sequence[float], List[float]]] = {}
 
     def sample_state_from_belief(self, belief: Sequence[float], rng: random.Random) -> int:
         t0 = time.perf_counter()
-        out = sample_from_dist(enumerate(belief), rng, self.model.sink_state)
+        cached = self._belief_cums.get(id(belief))
+        if cached is not None and cached[0] is belief:
+            cum = cached[1]
+        else:
+            cum = list(accumulate(float(p) for p in belief))
+            if len(self._belief_cums) > 256:
+                self._belief_cums.clear()
+            self._belief_cums[id(belief)] = (belief, cum)
+
+        # Bit-exact match of the old linear scan: same rng draw, same running
+        # sums, first index with r <= cum, last index if the mass falls short.
+        r = rng.random()
+        if not cum:
+            out = self.model.sink_state
+        else:
+            idx = bisect.bisect_left(cum, r)
+            out = idx if idx < len(cum) else len(cum) - 1
         if self.profiler is not None:
             self.profiler.add("model.sample_state_from_belief", time.perf_counter() - t0)
         return out

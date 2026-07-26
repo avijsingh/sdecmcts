@@ -28,7 +28,9 @@ generative adapter, exact Bayes filters, action priors, and the episode driver.
 from __future__ import annotations
 
 import argparse
+import bisect
 from functools import lru_cache
+from itertools import accumulate
 import math
 import os
 import random
@@ -230,17 +232,25 @@ class MarsModel:
 class MarsObsModelAdapter:
     def __init__(self, model: MarsModel):
         self.model = model
+        # id(belief) -> (belief ref, cumulative sums); the ref keeps the list
+        # alive so ids are never recycled while cached.
+        self._belief_cums: Dict[int, Tuple[Sequence[float], List[float]]] = {}
 
     def sample_state_from_belief(self, belief: Sequence[float], rng: random.Random) -> int:
+        cached = self._belief_cums.get(id(belief))
+        if cached is not None and cached[0] is belief:
+            cum = cached[1]
+        else:
+            cum = list(accumulate(belief))
+            if len(self._belief_cums) > 256:
+                self._belief_cums.clear()
+            self._belief_cums[id(belief)] = (belief, cum)
+
         r = rng.random()
-        cum = 0.0
-
-        for s, p in enumerate(belief):
-            cum += p
-            if r <= cum:
-                return s
-
-        return N_STATES - 1
+        if not cum:
+            return N_STATES - 1
+        idx = bisect.bisect_left(cum, r)
+        return idx if idx < len(cum) else N_STATES - 1
 
     def step(self, state: int, joint_a: int, rng: random.Random) -> StepResult:
         reward = self.model.reward(state, joint_a)

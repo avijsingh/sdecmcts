@@ -39,10 +39,13 @@ Domain:
 from __future__ import annotations
 
 import argparse
+import bisect
 import math
+from itertools import accumulate
 import os
 import random
 import sys
+import time
 from array import array
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -427,17 +430,25 @@ class MedevacModel:
 class MedevacObsModelAdapter:
     def __init__(self, model: MedevacModel):
         self.model = model
+        # id(belief) -> (belief ref, cumulative sums); the ref keeps the list
+        # alive so ids are never recycled while cached.
+        self._belief_cums: Dict[int, Tuple[Sequence[float], List[float]]] = {}
 
     def sample_state_from_belief(self, belief: Sequence[float], rng: random.Random) -> int:
+        cached = self._belief_cums.get(id(belief))
+        if cached is not None and cached[0] is belief:
+            cum = cached[1]
+        else:
+            cum = list(accumulate(belief))
+            if len(self._belief_cums) > 256:
+                self._belief_cums.clear()
+            self._belief_cums[id(belief)] = (belief, cum)
+
         r = rng.random()
-        cum = 0.0
-
-        for s, p in enumerate(belief):
-            cum += p
-            if r <= cum:
-                return s
-
-        return len(belief) - 1
+        if not cum:
+            return 0
+        idx = bisect.bisect_left(cum, r)
+        return idx if idx < len(cum) else len(cum) - 1
 
     def step(self, state: int, joint_action: int, rng: random.Random) -> StepResult:
         reward = self.model.reward(state, joint_action)
@@ -1198,6 +1209,26 @@ def run_episode_worker(payload):
 # Main
 # =============================================================================
 
+def run_initial_planning_timing(model: MedevacModel, args) -> None:
+    """Time a single full-horizon ObsDecMCTS planning step (paper 'time' metric)."""
+    beliefs = {
+        0: list(model.init_belief),
+        1: list(model.init_belief),
+    }
+    t0 = time.time()
+    run_obs_planning_step(
+        beliefs=beliefs,
+        remaining_horizon=args.horizon,
+        model=model,
+        args=args,
+        seed=args.seed,
+    )
+    elapsed = time.time() - t0
+    print("Initial MEDEVAC planning timing")
+    print(f"horizon={args.horizon}")
+    print(f"planning_time={elapsed:.6f}s")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
 
@@ -1265,8 +1296,15 @@ def main() -> None:
         help="Number of parallel worker processes. Use -1 for all CPU cores.",
     )
 
+    parser.add_argument("--timing-only", action="store_true",
+                        help="Time a single full-horizon planning step and exit.")
+
     args = parser.parse_args()
     model = MedevacModel()
+
+    if args.timing_only:
+        run_initial_planning_timing(model, args)
+        return
 
     print("Online ObsDecMCTS MEDEVAC benchmark")
     print(f"horizon={args.horizon}, episodes={args.episodes}")

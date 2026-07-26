@@ -31,6 +31,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import math
 import random
+import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import sys
@@ -1262,6 +1263,26 @@ def should_env_communicate(args, t, a0, a1):
     # periodic mode
     return args.env_comm_period > 0 and (t + 1) % args.env_comm_period == 0
 
+def run_initial_planning_timing(model: TigerModel, args) -> None:
+    """Time a single full-horizon ObsDecMCTS planning step (paper 'time' metric)."""
+    beliefs = {
+        0: list(model.init_belief),
+        1: list(model.init_belief),
+    }
+    t0 = time.time()
+    run_obs_planning_step(
+        beliefs=beliefs,
+        remaining_horizon=args.horizon,
+        model=model,
+        args=args,
+        seed=args.seed,
+    )
+    elapsed = time.time() - t0
+    print("Initial Tiger planning timing")
+    print(f"horizon={args.horizon}")
+    print(f"planning_time={elapsed:.6f}s")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--horizon", type=int, default=8)
@@ -1323,9 +1344,16 @@ def main() -> None:
         help="Number of parallel worker processes. Use 1 for serial or -1 for all CPU cores.",
     )
 
+    parser.add_argument("--timing-only", action="store_true",
+                        help="Time a single full-horizon planning step and exit.")
+
     args = parser.parse_args()
 
     model = TigerModel()
+
+    if args.timing_only:
+        run_initial_planning_timing(model, args)
+        return
 
     print("Online Dec-MCTS Tiger benchmark")
     print(f"horizon={args.horizon}, episodes={args.episodes}")

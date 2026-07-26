@@ -24,9 +24,17 @@ _PROFILER: Any = None
 
 
 def set_profiler(profiler: Any) -> None:
-    """Register an optional profiler with add(name, elapsed, count=1)."""
+    """Register an optional profiler with add(name, elapsed, count=1).
+
+    Method wrappers are installed only while a profiler is registered, so
+    there is no per-call overhead when profiling is off.
+    """
     global _PROFILER
     _PROFILER = profiler
+    if profiler is None:
+        _uninstall_core_profiling_wrappers()
+    else:
+        _install_core_profiling_wrappers()
 
 
 def _profiled_method(label: str, fn: Callable) -> Callable:
@@ -103,6 +111,10 @@ class ObsActionEdge:
 
         self.disc_visits = 0.0
         self.disc_reward = 0.0
+        # Simulation index the discounted stats are current with. Decay is
+        # applied lazily as gamma^(t - last_t) on the next touch, which is
+        # equivalent to decaying every element after every simulation.
+        self.last_t = 0
 
         # own observation -> ObsNode
         self.obs_children: Dict[Observation, ObsNode] = {}
@@ -113,9 +125,13 @@ class ObsActionEdge:
     def disc_q(self) -> float:
         return self.disc_reward / self.disc_visits if self.disc_visits > 0 else 0.0
 
-    def update_discounted(self, reward: float, visited: bool, gamma: float) -> None:
-        self.disc_visits = gamma * self.disc_visits + (1.0 if visited else 0.0)
-        self.disc_reward = gamma * self.disc_reward + (reward if visited else 0.0)
+    def decay_to(self, t: int, gamma: float) -> None:
+        if t > self.last_t:
+            if gamma != 1.0:
+                factor = gamma ** (t - self.last_t)
+                self.disc_visits *= factor
+                self.disc_reward *= factor
+            self.last_t = t
 
 
 class ObsNode:
@@ -148,6 +164,8 @@ class ObsNode:
 
         self.disc_visits = 0.0
         self.disc_reward = 0.0
+        # See ObsActionEdge.last_t: lazy-decay timestamp for the disc stats.
+        self.last_t = 0
 
     def is_fully_expanded(self) -> bool:
         return len(self.untried_actions) == 0
@@ -161,13 +179,17 @@ class ObsNode:
 
     def q(self) -> float:
         return self.value_sum / self.visits if self.visits > 0 else 0.0
-    
+
     def disc_q(self) -> float:
         return self.disc_reward / self.disc_visits if self.disc_visits > 0 else 0.0
 
-    def update_discounted(self, reward: float, visited: bool, gamma: float) -> None:
-        self.disc_visits = gamma * self.disc_visits + (1.0 if visited else 0.0)
-        self.disc_reward = gamma * self.disc_reward + (reward if visited else 0.0)
+    def decay_to(self, t: int, gamma: float) -> None:
+        if t > self.last_t:
+            if gamma != 1.0:
+                factor = gamma ** (t - self.last_t)
+                self.disc_visits *= factor
+                self.disc_reward *= factor
+            self.last_t = t
 
 
 class ObsDecMCTS:
@@ -251,6 +273,12 @@ class ObsDecMCTS:
             depth=0,
             legal_actions=self.legal_actions_fn((), 0),
         )
+        # Flat registries of every node/edge plus a completed-simulation
+        # counter, so backups touch only the visited path and discounted
+        # stats decay lazily instead of via a full-tree sweep per simulation.
+        self._all_nodes: List[ObsNode] = [self.root]
+        self._all_edges: List[ObsActionEdge] = []
+        self._completed_sims = 0
         # Teammate distributions over policy trees.
         self.received_dists: Dict[RobotID, Dict[PolicyKey, float]] = {
             rid: {} for rid in self.robot_ids if rid != self.robot_id
@@ -259,6 +287,9 @@ class ObsDecMCTS:
         # Own sparse support and distribution over partial policy trees.
         self.X_hat: List[PolicyKey] = []
         self.q: Dict[PolicyKey, float] = {}
+        # Monte Carlo scores per candidate policy; rejected candidates keep
+        # their stale score instead of being re-rolled every outer iteration.
+        self._policy_score_cache: Dict[PolicyKey, float] = {}
         self.sample_space_history: List[Dict[str, Any]] = []
         self.action_tiebreak_history: List[Dict[str, Any]] = []
         self.action_margin = 0.05
@@ -558,44 +589,31 @@ class ObsDecMCTS:
         self.min_reward = min(self.min_reward, total_return)
         self.max_reward = max(self.max_reward, total_return)
 
-        visited_edge_ids = {id(e) for e in visited_edges}
-        all_edges: List[ObsActionEdge] = []
-        self._collect_edges(self.root, all_edges)
+        # Only the visited path is touched; everything off-path decays lazily
+        # via decay_to on its next read (equivalent to the old full sweep).
+        t = self._completed_sims + 1
 
-        for edge in all_edges:
-            on_path = id(edge) in visited_edge_ids
+        for edge in visited_edges:
+            edge.visits += 1
+            edge.value_sum += total_return
 
-            if on_path:
-                edge.visits += 1
-                edge.value_sum += total_return
+            edge.decay_to(t, self.gamma)
+            edge.disc_visits += 1.0
+            edge.disc_reward += total_return
 
-            edge.update_discounted(
-                reward=total_return,
-                visited=on_path,
-                gamma=self.gamma,
-            )
+        for node in visited_nodes:
+            node.visits += 1
+            node.value_sum += total_return
 
-        # Update nodes once.
-        visited_node_ids = {id(n) for n in visited_nodes}
-        all_nodes: List[ObsNode] = []
-        self._collect_nodes(self.root, all_nodes)
+            if total_return > node.representative_reward:
+                node.representative_reward = total_return
+                node.representative_policy = own_policy.key()
 
-        for node in all_nodes:
-            on_path = id(node) in visited_node_ids
+            node.decay_to(t, self.gamma)
+            node.disc_visits += 1.0
+            node.disc_reward += total_return
 
-            if on_path:
-                node.visits += 1
-                node.value_sum += total_return
-
-                if total_return > node.representative_reward:
-                    node.representative_reward = total_return
-                    node.representative_policy = own_policy.key()
-
-            node.update_discounted(
-                reward=total_return,
-                visited=on_path,
-                gamma=self.gamma,
-            )
+        self._completed_sims = t
     
     # REMOVE ONCE FIXED
     def obs_root_edge_stats(planner):
@@ -670,11 +688,13 @@ class ObsDecMCTS:
 
         if own_obs not in edge.obs_children:
             next_history = next_histories[self.robot_id]
-            edge.obs_children[own_obs] = ObsNode(
+            child = ObsNode(
                 history=next_history,
                 depth=depth + 1,
                 legal_actions=self.legal_actions_fn(next_history, depth + 1),
             )
+            edge.obs_children[own_obs] = child
+            self._all_nodes.append(child)
             # Roll out after first newly-created observation node.
             future = self._rollout(
                 state=step.next_state,
@@ -715,7 +735,7 @@ class ObsDecMCTS:
                 action = default_action
             else:
                 action = self.rng.choice(node.untried_actions)
-            node.add_action_edge(action)
+            self._all_edges.append(node.add_action_edge(action))
             return action
 
         return max(
@@ -724,6 +744,9 @@ class ObsDecMCTS:
         ).action
 
     def _ucb(self, edge: ObsActionEdge, node: ObsNode) -> float:
+        edge.decay_to(self._completed_sims, self.gamma)
+        node.decay_to(self._completed_sims, self.gamma)
+
         if edge.disc_visits <= 0:
             return float("inf")
 
@@ -792,219 +815,6 @@ class ObsDecMCTS:
     # Sparse policy distribution update
     # ------------------------------------------------------------------
 
-    # def _update_sample_space(self) -> None:
-    #     nodes: List[ObsNode] = []
-    #     self._collect_nodes(self.root, nodes)
-
-    #     candidates = [
-    #         n for n in nodes
-    #         if n.representative_policy is not None
-    #     ]
-    #     if not candidates:
-    #         return
-
-    #     # TODO: Check which implementation is correct
-    #    # candidates.sort(key=lambda n: n.q(), reverse=True)
-    #     candidates.sort(key=lambda n: n.disc_q(), reverse=True)
-    #     # candidates.sort(key=lambda n: n.representative_reward, reverse=True)
-
-    #     new_X_hat: List[PolicyKey] = []
-    #     seen = set()
-
-    #     for n in candidates:
-    #         key = n.representative_policy
-    #         if key is None or key in seen:
-    #             continue
-    #         new_X_hat.append(key)
-    #         seen.add(key)
-
-    #         if len(new_X_hat) >= self.num_policies:
-    #             break
-
-    #     if not new_X_hat:
-    #         return
-
-    #     if set(new_X_hat) != set(self.X_hat):
-    #         self.X_hat = new_X_hat
-    #         self.q = {key: 1.0 / len(new_X_hat) for key in new_X_hat}
-    #         self.beta = self.beta_init
-        
-    #     # if set(new_X_hat) != set(self.X_hat):
-    #     #     self.X_hat = new_X_hat
-
-    #     #     if self.preserve_q_on_sample_space_change:
-    #     #         fallback = 1.0 / len(new_X_hat)
-    #     #         self.q = self._normalize({
-    #     #             key: self.q.get(key, fallback)
-    #     #             for key in new_X_hat
-    #     #         })
-    #     #     else:
-    #     #         self.q = {key: 1.0 / len(new_X_hat) for key in new_X_hat}
-    #     #         self.beta = self.beta_init
-
-    # def _update_sample_space(self) -> None:
-    #     """
-    #     DEBUG / safer variant: REMOVE
-    #     Build candidate policies from root action values instead of from
-    #     max-sampled representative trajectories.
-    #     """
-
-    #     if not self.root.actions:
-    #         return
-
-    #     ranked_edges = sorted(
-    #         self.root.actions.values(),
-    #         key=lambda e: e.q(),
-    #         reverse=True,
-    #     )
-
-    #     new_X_hat: List[PolicyKey] = []
-
-    #     for edge in ranked_edges:
-    #         policy = PolicyTree(default_action_fn=self.default_action_fn)
-    #         policy.set_action((), edge.action)
-    #         key = policy.key()
-    #         new_X_hat.append(key)
-
-    #         if len(new_X_hat) >= self.num_policies:
-    #             break
-
-    #     if not new_X_hat:
-    #         return
-
-    #     if set(new_X_hat) != set(self.X_hat):
-    #         self.X_hat = new_X_hat
-    #         self.q = {key: 1.0 / len(new_X_hat) for key in new_X_hat}
-    #         self.beta = self.beta_init
-
-    # def _update_sample_space(self) -> None:
-    #     """
-    #     Build one policy candidate per legal root action. REMOVE
-
-    #     Each candidate forces a different root action, then fills the rest of the
-    #     observation-conditioned policy greedily from the current tree.
-
-    #     This avoids max-sampled representative trajectories while preserving
-    #     non-root observation-conditioned policy structure.
-    #     """
-    #     if not self.root.actions:
-    #         return
-
-    #     new_X_hat: List[PolicyKey] = []
-    #     seen = set()
-
-    #     # for action in self.root.legal_actions:
-    #     #     policy = self._policy_from_forced_root_action(action)
-    #     #     key = policy.key()
-
-    #     #     if key in seen:
-    #     #         continue
-
-    #     #     new_X_hat.append(key)
-    #     #     seen.add(key)
-
-    #     # REMOVE
-    #     for action in self.root.legal_actions:
-    #         policy = self._policy_from_forced_root_action(action)
-    #         key = policy.key()
-
-    #         if key in seen:
-    #             continue
-
-    #         new_X_hat.append(key)
-    #         seen.add(key)
-
-    #         if len(new_X_hat) >= self.num_policies:
-    #             break
-
-    #             if not new_X_hat:
-    #                 return
-
-    #             if set(new_X_hat) != set(self.X_hat):
-    #                 self.X_hat = new_X_hat
-    #                 self.q = {key: 1.0 / len(new_X_hat) for key in new_X_hat}
-    #                 self.beta = self.beta_init
-        
-    #     # if set(new_X_hat) != set(self.X_hat):
-    #     #     old_mass_by_root = {}
-
-    #     #     for old_key, old_p in self.q.items():
-    #     #         root_a = self._root_action_of_key(old_key)
-    #     #         if root_a is not None:
-    #     #             old_mass_by_root[root_a] = old_mass_by_root.get(root_a, 0.0) + old_p
-
-    #     #     new_q = {}
-    #     #     for new_key in new_X_hat:
-    #     #         root_a = self._root_action_of_key(new_key)
-    #     #         if root_a is None:
-    #     #             new_q[new_key] = 1.0 / len(new_X_hat)
-    #     #         else:
-    #     #             new_q[new_key] = old_mass_by_root.get(root_a, 1.0 / len(new_X_hat))
-
-    #     #     self.X_hat = new_X_hat
-    #     #     self.q = self._normalize(new_q)
-
-    # def _update_sample_space(self) -> None:
-    #     """
-    #     Generic sample-space update.
-
-    #     Candidate policies come from:
-    #     1. representative policies discovered during tree search
-    #     2. root-action-forced policies from explored root edges
-
-    #     We then rank all candidates by estimated/tree value and keep the top
-    #     self.num_policies. This avoids domain-specific behavior and avoids
-    #     arbitrary dependence on legal action ordering.
-    #     """
-    #     candidate_scores: Dict[PolicyKey, float] = {}
-
-    #     # 1. Representative policies from tree nodes.
-    #     nodes: List[ObsNode] = []
-    #     self._collect_nodes(self.root, nodes)
-
-    #     for node in nodes:
-    #         key = node.representative_policy
-    #         if key is None:
-    #             continue
-
-    #         # Prefer discounted value because your current tree uses disc stats.
-    #         score = node.disc_q() if node.disc_visits > 0 else node.q()
-
-    #         if key not in candidate_scores or score > candidate_scores[key]:
-    #             candidate_scores[key] = score
-
-    #     # 2. Root-action-forced policies from explored root actions.
-    #     for edge in self.root.actions.values():
-    #         policy = self._policy_from_forced_root_action(edge.action)
-    #         key = policy.key()
-
-    #         score = edge.disc_q() if edge.disc_visits > 0 else edge.q()
-
-    #         if key not in candidate_scores or score > candidate_scores[key]:
-    #             candidate_scores[key] = score
-
-    #     if not candidate_scores:
-    #         return
-
-    #     ranked_keys = [
-    #         key
-    #         for key, _score in sorted(
-    #             candidate_scores.items(),
-    #             key=lambda kv: kv[1],
-    #             reverse=True,
-    #         )
-    #     ]
-
-    #     new_X_hat = ranked_keys[: self.num_policies]
-
-    #     if not new_X_hat:
-    #         return
-
-    #     if set(new_X_hat) != set(self.X_hat):
-    #         self.X_hat = new_X_hat
-    #         self.q = {key: 1.0 / len(new_X_hat) for key in new_X_hat}
-    #         self.beta = self.beta_init
-
     def _replace_sample_space_preserve_q(
         self,
         new_X_hat: List[PolicyKey],
@@ -1026,51 +836,16 @@ class ObsDecMCTS:
             })
             return
 
-        # TESTING: old behavior preserved surviving policy mass and gave newly
-        # discovered policies a tiny prior. This can trap good new policies near
-        # zero probability when X_hat changes late in a short-horizon solve.
-        #
-        # eps = 1e-3
-        # new_q = {}
-        #
-        # for key in new_X_hat:
-        #     if key in old_q:
-        #         new_q[key] = old_q[key]
-        #     else:
-        #         # Small prior for newly discovered policies.
-        #         new_q[key] = eps
-        #
-        # self.X_hat = new_X_hat
-        # self.q = self._normalize(new_q)
-        #
-        # # Do not reset beta every time; changing support is normal.
-        # # self.beta = self.beta_init
-
-        # TESTING: simple preserve/uniform blend. This reduced lock-in in one
-        # isolated case but made Tiger policy consistency worse overall.
-        #
-        # uniform = 1.0 / len(new_X_hat)
-        # blend = 0.30
-        # preserved_q = self._normalize({
-        #     key: old_q.get(key, 0.0)
-        #     for key in new_X_hat
-        # })
-        #
-        # self.X_hat = new_X_hat
-        # self.q = self._normalize({
-        #     key: (1.0 - blend) * preserved_q.get(key, 0.0) + blend * uniform
-        #     for key in new_X_hat
-        # })
-
+        # Support changed. Two simpler rules were rejected: preserving surviving
+        # mass and giving new policies a tiny prior traps good late-discovered
+        # policies near zero probability, and a preserve/uniform blend made Tiger
+        # policy consistency worse. Blending toward value-initialized q avoids
+        # both; 0.80 beat 0.50, which left too much stale support mass in Tiger.
         value_q = self._value_initialized_q(new_X_hat, scores or {})
         preserved_q = self._normalize({
             key: old_q.get(key, 0.0)
             for key in new_X_hat
         })
-        # TESTING: a 0.50 value blend fixed a targeted stale-q case but still
-        # left too much room for stale support probabilities in Tiger batches.
-        #
-        # blend = 0.50
         blend = 0.80
 
         self.X_hat = new_X_hat
@@ -1126,14 +901,12 @@ class ObsDecMCTS:
     def _update_sample_space(self) -> None:
         candidate_scores: Dict[PolicyKey, float] = {}
 
-        nodes: List[ObsNode] = []
-        self._collect_nodes(self.root, nodes)
-
-        for node in nodes:
+        for node in self._all_nodes:
             key = node.representative_policy
             if key is None:
                 continue
 
+            node.decay_to(self._completed_sims, self.gamma)
             score = node.disc_q() if node.disc_visits > 0 else node.q()
             if key not in candidate_scores or score > candidate_scores[key]:
                 candidate_scores[key] = score
@@ -1149,10 +922,20 @@ class ObsDecMCTS:
         if not candidate_scores:
             return
 
-        scored = [
-            (key, self._score_policy_key(key, n_eval=max(1, self.num_samples)))
-            for key in candidate_scores.keys()
-        ]
+        # Only new candidates and the current support are (re)scored against
+        # the latest teammate distributions; previously rejected candidates
+        # reuse their cached score. This drops the per-iteration scoring cost
+        # from O(all candidates) to O(|X_hat| + new candidates).
+        xhat_set = set(self.X_hat)
+        scored = []
+        for key in candidate_scores.keys():
+            cached_score = self._policy_score_cache.get(key)
+            if cached_score is None or key in xhat_set:
+                score = self._score_policy_key(key, n_eval=max(1, self.num_samples))
+                self._policy_score_cache[key] = score
+            else:
+                score = cached_score
+            scored.append((key, score))
 
         scored.sort(key=lambda kv: kv[1], reverse=True)
         new_X_hat = [key for key, _score in scored[: self.num_policies]]
@@ -1458,8 +1241,8 @@ class ObsDecMCTSTeam:
         return out
 
 
-def _install_core_profiling_wrappers() -> None:
-    planner_methods = [
+_PROFILED_METHOD_NAMES = {
+    ObsDecMCTS: [
         "iterate",
         "best_policy",
         "best_policy_by_value",
@@ -1482,30 +1265,28 @@ def _install_core_profiling_wrappers() -> None:
         "_fill_greedy_policy",
         "_collect_nodes",
         "_collect_edges",
-    ]
-    for name in planner_methods:
-        fn = getattr(ObsDecMCTS, name, None)
-        if fn is not None:
-            setattr(
-                ObsDecMCTS,
-                name,
-                _profiled_method(f"obs_core.ObsDecMCTS.{name}", fn),
-            )
-
-    team_methods = [
+    ],
+    ObsDecMCTSTeam: [
         "iterate_and_communicate",
         "best_policies",
         "best_actions",
         "entropies",
-    ]
-    for name in team_methods:
-        fn = getattr(ObsDecMCTSTeam, name, None)
-        if fn is not None:
-            setattr(
-                ObsDecMCTSTeam,
-                name,
-                _profiled_method(f"obs_core.ObsDecMCTSTeam.{name}", fn),
-            )
+    ],
+}
+
+_ORIGINAL_METHODS: List[Tuple[type, str, Callable]] = [
+    (cls, name, getattr(cls, name))
+    for cls, names in _PROFILED_METHOD_NAMES.items()
+    for name in names
+    if getattr(cls, name, None) is not None
+]
 
 
-_install_core_profiling_wrappers()
+def _install_core_profiling_wrappers() -> None:
+    for cls, name, fn in _ORIGINAL_METHODS:
+        setattr(cls, name, _profiled_method(f"obs_core.{cls.__name__}.{name}", fn))
+
+
+def _uninstall_core_profiling_wrappers() -> None:
+    for cls, name, fn in _ORIGINAL_METHODS:
+        setattr(cls, name, fn)

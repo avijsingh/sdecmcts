@@ -1,0 +1,140 @@
+{
+  "meta": {
+    "timestamp": "20260406_104457",
+    "paper": "Best et al. 2019, Dec-MCTS, IJRR 38(2-3)"
+  },
+  "config": {
+    "N_VERTICES": 4000,
+    "N_REGIONS": 200,
+    "N_ROBOTS": 8,
+    "N_OBSTACLES": 5,
+    "N_NEIGHBOURS": 8,
+    "WORLD_SIZE": 100.0,
+    "BUDGET": 80.0,
+    "REGION_RADIUS": 8.0,
+    "TAU": 10,
+    "NUM_SEQ": 10,
+    "NUM_SAMPLES": 20,
+    "GAMMA": 0.9,
+    "CP": 0.7071067811865475,
+    "ALPHA": 0.01,
+    "BETA_INIT": 1.0,
+    "BETA_DECAY": 0.99,
+    "N_OUTER": 5,
+    "SEED": 42
+  },
+  "paper_comparison": {
+    "dec_pct_of_max": 30.739299610894943,
+    "dec_pct_of_max_paper": 65.0,
+    "dec_vs_cen_median_pct": 19.696969696969703,
+    "dec_vs_cen_median_pct_paper": 7.0,
+    "dec_beats_cen_fraction": 1.0,
+    "dec_beats_cen_fraction_paper": 0.91,
+    "dec_regions_found_avg": 59.0,
+    "dec_regions_found_paper": 120,
+    "n_regions_total": 200,
+    "dec_reward_median": 316.0,
+    "cen_reward_median": 264.0
+  },
+  "correctness_checks": {
+    "paths_graph_connected": true,
+    "budget_respected": true,
+    "marginals_sum_leq_joint": true,
+    "distributions_sum_to_1": true,
+    "reward_gt_0": true,
+    "reward_improves": true
+  },
+  "per_robot_diagnostics": {
+    "0": {
+      "marginal_contribution": 12.0,
+      "entropy_final": 2.3017004774457694,
+      "sharpness": 0.0003841836512222807,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    },
+    "1": {
+      "marginal_contribution": 22.0,
+      "entropy_final": 2.3009453513262206,
+      "sharpness": 0.0007121307580834069,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    },
+    "2": {
+      "marginal_contribution": 8.0,
+      "entropy_final": 2.3023547725727376,
+      "sharpness": 0.00010002688804389148,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 3,
+      "dist_normalized": true
+    },
+    "3": {
+      "marginal_contribution": 1.0,
+      "entropy_final": 2.302405982812354,
+      "sharpness": 7.778656356149938e-05,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    },
+    "4": {
+      "marginal_contribution": 0.0,
+      "entropy_final": 2.3025828408597007,
+      "sharpness": 9.780895185995675e-07,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    },
+    "5": {
+      "marginal_contribution": 25.0,
+      "entropy_final": 2.299610079496718,
+      "sharpness": 0.0012920319454772233,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    },
+    "6": {
+      "marginal_contribution": 27.0,
+      "entropy_final": 2.3011895939474662,
+      "sharpness": 0.0006060575354307485,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    },
+    "7": {
+      "marginal_contribution": 9.0,
+      "entropy_final": 2.3002995001112674,
+      "sharpness": 0.000992620376868092,
+      "beta_final": 0.9509900498999999,
+      "tree_nodes": 51,
+      "seq_len": 2,
+      "dist_normalized": true
+    }
+  },
+  "convergence": {
+    "reward_curve": [
+      241.0,
+      277.0,
+      283.0,
+      294.0,
+      316.0
+    ],
+    "reward_iter_1": 241.0,
+    "reward_final": 316.0,
+    "reward_pct_gain": 31.12033195020747,
+    "first_half_avg": 259.0,
+    "second_half_avg": 297.6666666666667,
+    "total_reward_max": 1028
+  },
+  "timing": {
+    "dec_elapsed_s": 1.0608050001319498,
+    "cen_elapsed_s": 0.09888341603800654
+  }
+}

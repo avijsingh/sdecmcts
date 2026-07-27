@@ -1,437 +1,525 @@
 """
 decmcts.py
 ----------
-Dec-MCTS implementation:
-Builds on the single-agent MCTS base in Scripts/mcts.py.
 
-Your state object must implement:
-    state.get_legal_actions()  -> list of actions
-    state.take_action(action)  -> new state
-    state.is_terminal_state()  -> bool
-    state.reward               -> float  (only needed if using single-agent MCTS)
+This file implements the *open-loop action-sequence* Dec-MCTS planner described
+by Best et al. Each robot maintains a local MCTS tree over its own action
+sequences and a sparse probability distribution q^r over promising complete
+action sequences. 
+
+Each edge is an action, each node is an action sequence <-- tree architecture
+
+Only implements a planner, receding-horizon control scheme implemented in benchmarks
+
 """
 
+from __future__ import annotations
+
+import copy
 import math
 import random
-import copy
-
-from mcts import MCTSNode, MCTS  # single-agent base
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Optional, Sequence, Tuple
 
 
-# PART 1 — DEC-MCTS NODE
+Action = Any
+RobotID = Hashable
+ActionSeq = Tuple[Action, ...]
+JointSequences = Dict[RobotID, List[Action]]
+
+
 class DecMCTSNode:
     """
     Node in robot r's local search tree T^r.
-    Each edge = one action by robot r.
-    A path root→node = action sequence x^r.
 
-    Extends the single-agent node with:
-      - action_sequence: cached path from root (needed by rollout evaluator)
-      - untried_actions: list maintained for expansion
-      - D-UCT discounted statistics (Section 4.3.1, Equations 4-7)
+    Each edge is one action by robot r.
+    A root-to-node path is an open-loop action prefix x^r.
 
-    D-UCT recurrence (applied once per MCTS iteration t):
-        disc_visits[t] = gamma * disc_visits[t-1]  +  1{this node visited}
-        disc_reward[t] = gamma * disc_reward[t-1]  +  F_t * 1{this node visited}
+    The node stores:
+      - action_sequence: prefix from root to this node
+      - untried_actions: legal actions not yet expanded at this node
+      - standard stats: visits, cum_reward
+      - discounted D-UCT stats: disc_visits, disc_reward
+      - representative_sequence: best full rollout-completed sequence observed
+        through this node
     """
 
-    def __init__(self, state, parent=None, action=None):
-        self.state    = state
-        self.parent   = parent
-        self.action   = action
-        self.children = []
+    def __init__(self, state: Any, parent: Optional["DecMCTSNode"] = None, action: Any = None):
+        self.state = state
+        self.parent = parent
+        self.action = action
+        self.children: List[DecMCTSNode] = []
 
-        # Standard (undiscounted) statistics — used for final action extraction
-        self.visits     = 0
+        self.visits = 0
         self.cum_reward = 0.0
 
-        # D-UCT discounted statistics
         self.disc_visits = 0.0
         self.disc_reward = 0.0
 
-        # Cache the full action sequence root→this node
-        self.action_sequence = (
+        self.action_sequence: List[Action] = (
             parent.action_sequence + [action] if parent is not None else []
         )
 
-
-        # Untried actions: copy so we never alias state internals
-        self.untried_actions = (
+        self.untried_actions: List[Action] = (
             list(state.get_legal_actions())
             if state is not None and not state.is_terminal_state()
             else []
         )
 
-    # Tree structure
+        # Full sequence completed by rollout; used for X_hat.
+        self.representative_sequence: Optional[ActionSeq] = None
+        self.representative_reward: float = float("-inf")
 
-    def is_fully_expanded(self):
+    def is_fully_expanded(self) -> bool:
         return len(self.untried_actions) == 0
 
-    def is_terminal(self):
+    def is_terminal(self) -> bool:
         return self.state is None or self.state.is_terminal_state()
 
-    def add_child(self, action, next_state):
+    def add_child(self, action: Action, next_state: Any) -> "DecMCTSNode":
         child = DecMCTSNode(next_state, parent=self, action=action)
         self.children.append(child)
         if action in self.untried_actions:
             self.untried_actions.remove(action)
         return child
 
-    # Q-value accessors
-
-    def disc_q(self):
-        """Discounted empirical average F̄ (Equation 6)."""
-        return self.disc_reward / self.disc_visits if self.disc_visits > 0 else 0.0
-
-    def q(self):
-        """Undiscounted Q — used for final greedy extraction (more stable)."""
+    def q(self) -> float:
         return self.cum_reward / self.visits if self.visits > 0 else 0.0
 
-    # D-UCT upper confidence bound
+    def disc_q(self) -> float:
+        return self.disc_reward / self.disc_visits if self.disc_visits > 0 else 0.0
 
-    def d_ucb(self, parent, t, gamma, Cp):
+    def d_ucb(
+        self,
+        parent: "DecMCTSNode",
+        gamma: float,
+        cp: float,
+        min_reward: float,
+        max_reward: float,
+    ) -> float:
         """
-        D-UCT score (Equation 3 / 7):
+        D-UCT score:
+            discounted empirical mean + discounted exploration bonus
 
-            U = F̄_j(gamma) + 2*Cp * sqrt( log(disc_visits_parent) / disc_visits_j )
-
-        Returns inf for unvisited nodes or when parent has too few visits
-        (log(x) < 0 for x < 1).
+        The empirical mean is normalized to [0,1] using observed reward bounds
+        so that cp is reasonably stable across reward scales.
         """
-        if self.disc_visits == 0:
+        if self.disc_visits <= 0.0:
             return float("inf")
         if parent.disc_visits <= 1.0:
             return float("inf")
-        exploration = 2.0 * Cp * math.sqrt(math.log(parent.disc_visits) / self.disc_visits)
-        return self.disc_q() + exploration
 
-    def update_discounted(self, reward, visited, gamma):
-        """
-        Incremental D-UCT update — call once per MCTS iteration.
+        q = self.disc_q()
+        if max_reward > min_reward:
+            q_norm = (q - min_reward) / (max_reward - min_reward)
+        else:
+            q_norm = 0.5
 
-        `visited` = True if this node was on the selection/expansion path.
-        Applies gamma decay to existing statistics, then folds in new sample.
-        """
+        # Guard against log(<1) from early discounted counts.
+        parent_count = max(parent.disc_visits, 1.0000001)
+        bonus = 2.0 * cp * math.sqrt(math.log(parent_count) / self.disc_visits)
+        return q_norm + bonus
+
+    def update_discounted(self, reward: float, visited: bool, gamma: float) -> None:
         self.disc_visits = gamma * self.disc_visits + (1.0 if visited else 0.0)
         self.disc_reward = gamma * self.disc_reward + (reward if visited else 0.0)
 
 
-# PART 2 — DEC-MCTS PLANNER
 class DecMCTS:
     """
-    Dec-MCTS planner for a single robot r.
+    Dec-MCTS planner for one robot r.
 
-    The outer loop cycles three phases per iteration n:
-        1. GROW TREE    — D-UCT MCTS using other robots' sampled sequences
-        2. UPDATE DIST  — gradient descent on product distribution q^r_n
-        3. COMMUNICATE  — broadcast/receive (X̂^r_n, q^r_n)  [handled externally]
+    Required state interface:
+        state.get_legal_actions() -> list
+        state.take_action(action) -> new state
+        state.is_terminal_state() -> bool
 
     Parameters
     ----------
-    robot_id         : hashable identifier for this robot
-    robot_ids        : list of all robot identifiers (including this one)
-    init_state       : initial state object
-    local_utility_fn : f^r(joint_sequences) -> float
-                       joint_sequences = {robot_id: [action, ...], ...}
-                       Should implement Equation 1:
-                           g(x^r u x^(r)) - g(x^r_∅ u x^(r))
-    gamma            : D-UCT discount factor ∈ (0.5, 1)
-    Cp               : exploration constant  (paper: Cp > 1/sqrt(8) ≈ 0.354)
-    rollout_depth    : max depth for random rollout simulation
-    tau              : MCTS iterations per outer loop iteration
-    num_seq          : size of sample space X̂^r_n  (paper uses 10)
-    num_samples      : MC samples for expectation estimates in dist update
-    beta_init        : initial temperature β for distribution optimization
-    beta_decay       : multiplicative cooling per outer iteration
-    alpha            : gradient step size (paper: alpha = 0.01)
+    robot_id:
+        This planner's robot id.
+    robot_ids:
+        All robot ids.
+    init_state:
+        Root state for this planning call.
+    local_utility_fn:
+        f^r(joint_sequences) -> float, where
+        joint_sequences = {robot_id: [a0, a1, ...], ...}.
+        Usually the difference reward:
+            g(x^r, x^{-r}) - g(x^r_null, x^{-r})
+    rollout_policy:
+        Optional callable: rollout_policy(planner, node, x_others) -> list[action].
+        Use this to inject a domain heuristic. It must not use hidden true state
+        unavailable to the agent.
+    default_sequence_fn:
+        Optional callable: default_sequence_fn(robot_id) -> list[action].
+        Used when no distribution has been received for another robot.
     """
 
     def __init__(
         self,
-        robot_id,
-        robot_ids,
-        init_state,
-        local_utility_fn,
-        gamma         = 0.9,
-        Cp            = 1.0 / math.sqrt(2),
-        rollout_depth = 20,
-        tau           = 10,
-        num_seq       = 10,
-        num_samples   = 30,
-        beta_init     = 1.0,
-        beta_decay    = 0.99,
-        alpha         = 0.01,
+        robot_id: RobotID,
+        robot_ids: Sequence[RobotID],
+        init_state: Any,
+        local_utility_fn: Callable[[JointSequences], float],
+        *,
+        rollout_policy: Optional[Callable[["DecMCTS", DecMCTSNode, JointSequences], List[Action]]] = None,
+        default_sequence_fn: Optional[Callable[[RobotID], List[Action]]] = None,
+        gamma: float = 0.95,
+        cp: float = 0.5,
+        rollout_depth: int = 20,
+        tau: int = 10,
+        num_seq: int = 10,
+        num_samples: int = 30,
+        beta_init: float = 1.0,
+        beta_decay: float = 0.995,
+        alpha: float = 0.01,
+        diverse_sample_space: bool = False,
+        seed: Optional[int] = None,
     ):
-        self.robot_id         = robot_id
-        self.robot_ids        = robot_ids
+        if not (0.5 < gamma <= 1.0):
+            raise ValueError("gamma should be in (0.5, 1].")
+        if tau <= 0:
+            raise ValueError("tau must be positive.")
+        if num_seq <= 0:
+            raise ValueError("num_seq must be positive.")
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive.")
+
+        self.robot_id = robot_id
+        self.robot_ids = list(robot_ids)
         self.local_utility_fn = local_utility_fn
-        self.gamma            = gamma
-        self.Cp               = Cp
-        self.rollout_depth    = rollout_depth
-        self.tau              = tau
-        self.num_seq          = num_seq
-        self.num_samples      = num_samples
-        self.beta             = beta_init
-        self.beta_decay       = beta_decay
-        self.alpha            = alpha
+        self.rollout_policy = rollout_policy
+        self.default_sequence_fn = default_sequence_fn
 
-        # Search tree T^r
+        self.gamma = gamma
+        self.cp = cp
+        self.rollout_depth = rollout_depth
+        self.tau = tau
+        self.num_seq = num_seq
+        self.num_samples = num_samples
+        self.beta = beta_init
+        self.beta_init = beta_init
+        self.beta_decay = beta_decay
+        self.alpha = alpha
+        self.diverse_sample_space = diverse_sample_space
+
+        self.rng = random.Random(seed)
+
+        self.min_reward = float("inf")
+        self.max_reward = float("-inf")
+
         self.root = DecMCTSNode(init_state)
-
-        # Global iteration counter t
+        self._all_nodes: List[DecMCTSNode] = [self.root]
         self.t = 0
 
-        # Other robots' received distributions: {robot_id: {seq_tuple: prob}}
-        # Empty until first message received — robot uses default (empty) policy
-        self.received_dists = {r: {} for r in robot_ids if r != robot_id}
+        # Other robots' distributions: {other_robot_id: {action_seq_tuple: prob}}
+        self.received_dists: Dict[RobotID, Dict[ActionSeq, float]] = {
+            r: {} for r in self.robot_ids if r != self.robot_id
+        }
 
-        # Robot r's own distribution q^r_n and sample space X̂^r_n
-        self.X_hat = []   # List[tuple] -> sample space
-        self.q     = {}   # Dict[tuple, float] -> distribution over X_hat
+        # Own sparse sample space and distribution.
+        self.X_hat: List[ActionSeq] = []
+        self.q: Dict[ActionSeq, float] = {}
 
-    # PUBLIC API
-    def iterate(self, n_outer=1):
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def iterate(self, n_outer: int = 1) -> None:
         """
-        Run n_outer iterations of the outer loop.
+        Run n_outer Dec-MCTS outer iterations.
 
-        Each outer iteration:
-          (a) updates sample space X̂^r_n
-          (b) runs tau MCTS rollouts  (Algorithm 2)
-          (c) updates distribution q^r_n  (Algorithm 3)
-          (d) cools beta
+        Correct schedule:
+            update sample space
+            grow tree tau times
+            update sample space again to include newly found rollouts
+            update q once
+            cool beta once
         """
         for _ in range(n_outer):
-            self._update_sample_space()          
-            for _ in range(self.tau):            
+            self._update_sample_space()
+
+            for _ in range(self.tau):
                 self._grow_tree_once()
-            self._update_distribution()          
-            self.beta *= self.beta_decay         
 
-    def receive(self, robot_id, X_hat, q):
-        """
-        Receive distribution from another robot.
-        Accepts either a list of probs aligned with X_hat, or a dict.
-        """
-        self.received_dists[robot_id] = dict(zip(
-            [tuple(x) for x in X_hat],
-            q if isinstance(q, list) else list(q.values())
-        ))
+            if self.X_hat:
+                self._update_distribution()
 
-    def receive_dist_dict(self, robot_id, dist_dict):
-        """Convenience: receive a {seq_tuple: prob} dict directly."""
-        self.received_dists[robot_id] = copy.copy(dist_dict)
+            self.beta *= self.beta_decay
 
-    def get_distribution(self):
+    def receive(self, robot_id: RobotID, X_hat: Sequence[Sequence[Action]], q: Any) -> None:
         """
-        Return (X̂^r_n, q^r_n) for broadcasting.
+        Receive another robot's distribution.
+
+        q may be:
+          - dict {sequence_tuple: probability}
+          - list of probabilities aligned with X_hat
         """
+        if isinstance(q, dict):
+            self.received_dists[robot_id] = {
+                tuple(seq): float(prob) for seq, prob in q.items()
+            }
+        else:
+            self.received_dists[robot_id] = {
+                tuple(seq): float(prob) for seq, prob in zip(X_hat, q)
+            }
+
+    def receive_dist_dict(self, robot_id: RobotID, dist_dict: Dict[ActionSeq, float]) -> None:
+        self.received_dists[robot_id] = {
+            tuple(seq): float(prob) for seq, prob in dist_dict.items()
+        }
+
+    def get_distribution(self) -> Tuple[List[ActionSeq], Dict[ActionSeq, float]]:
         return list(self.X_hat), copy.copy(self.q)
 
-    def best_action_sequence(self):
+    def best_action_sequence(self) -> List[Action]:
         """
-        Return argmax_{x^r ∈ X̂^r_n} q^r_n(x^r).
-        Falls back to greedy Q-value tree descent if distribution is empty.
+        Return argmax_x q^r(x). If q is empty, fall back to greedy tree descent.
         """
         if self.q:
             return list(max(self.q, key=self.q.get))
         return self._greedy_tree_sequence()
 
     def best_action(self):
-        """Return just the first action of the best sequence."""
-        seq = self.best_action_sequence()
+        """
+        Return the most likely first action under q^r.
+
+        This is more stable for online/receding-horizon execution than taking the
+        first action of the single argmax sequence, especially when q is high-entropy.
+        """
+        if self.q:
+            action_mass = {}
+            for seq, prob in self.q.items():
+                if len(seq) == 0:
+                    continue
+                a0 = seq[0]
+                action_mass[a0] = action_mass.get(a0, 0.0) + prob
+
+            if action_mass:
+                return max(action_mass, key=action_mass.get)
+
+        seq = self._greedy_tree_sequence()
         return seq[0] if seq else None
 
-    # ALGORITHM 2: GROW TREE (one iteration)
-    def _grow_tree_once(self):
-        """
-        One iteration of growing the tree.
-        Uses D-UCT for selection instead of standard UCB.
-        Evaluation uses local_utility_fn over the joint sequence.
-        """
+    @staticmethod
+    def root_action_mass_from_dist(dist: Dict[ActionSeq, float]) -> Dict[Action, float]:
+        masses: Dict[Action, float] = {}
+
+        for seq, p in dist.items():
+            if len(seq) == 0:
+                continue
+            a0 = seq[0]
+            masses[a0] = masses.get(a0, 0.0) + p
+
+        return masses
+
+    # -------------------------------------------------------------------------
+    # Tree growth
+    # -------------------------------------------------------------------------
+
+    def _grow_tree_once(self) -> None:
         self.t += 1
 
-        # Selection: D-UCT descent
+        # Selection.
         node = self.root
         path = [node]
         while not node.is_terminal() and node.is_fully_expanded() and node.children:
             node = max(
                 node.children,
-                key=lambda c: c.d_ucb(node, self.t, self.gamma, self.Cp)
+                key=lambda c: c.d_ucb(
+                    parent=node,
+                    gamma=self.gamma,
+                    cp=self.cp,
+                    min_reward=self.min_reward,
+                    max_reward=self.max_reward,
+                ),
             )
             path.append(node)
 
-        # Expansion: add one untried child
+        # Expansion.
         if not node.is_terminal() and not node.is_fully_expanded():
-            action     = random.choice(node.untried_actions)
+            action = self.rng.choice(node.untried_actions)
             next_state = node.state.take_action(action)
-            node       = node.add_child(action, next_state)
+            node = node.add_child(action, next_state)
+            self._all_nodes.append(node)
             path.append(node)
 
-        # Simulation: random rollout from node 
-        rollout_actions = self._rollout(node)
-        x_r = node.action_sequence + rollout_actions
-
-        # Sample other robots sequences from their received distributions
+        # Sample other robots before rollout, as in Algorithm 2.
         x_others = self._sample_others()
 
-        # Evaluate local utility f^r
-        joint = {**x_others, self.robot_id: x_r}
-        F_t   = self.local_utility_fn(joint)
+        # Rollout completion for this robot.
+        rollout_actions = self._rollout(node, x_others)
+        x_r = list(node.action_sequence) + list(rollout_actions)
 
-        # Backpropagation
+        # Evaluate local utility.
+        joint = {**x_others, self.robot_id: x_r}
+        F_t = float(self.local_utility_fn(joint))
+
+        self.min_reward = min(self.min_reward, F_t)
+        self.max_reward = max(self.max_reward, F_t)
+
+        # Store the best full rollout-completed sequence seen through this node.
+        if F_t > node.representative_reward:
+            node.representative_reward = F_t
+            node.representative_sequence = tuple(x_r)
+
         self._backprop(path, F_t)
 
-    def _rollout(self, node):
-        """Random rollout policy from node.state. Returns list of actions taken."""
-        state   = node.state
-        actions = []
-        depth   = 0
-        while not state.is_terminal_state() and depth < self.rollout_depth:
-            legal = state.get_legal_actions()
+    def _rollout(self, node: DecMCTSNode, x_others: JointSequences) -> List[Action]:
+        if self.rollout_policy is not None:
+            return list(self.rollout_policy(self, node, x_others))
+
+        # Default random rollout.
+        state = node.state
+        actions: List[Action] = []
+        depth = 0
+
+        while state is not None and not state.is_terminal_state() and depth < self.rollout_depth:
+            legal = list(state.get_legal_actions())
             if not legal:
                 break
-            a = random.choice(legal)
+            a = self.rng.choice(legal)
             actions.append(a)
             state = state.take_action(a)
             depth += 1
+
         return actions
 
-    def _backprop(self, path, F_t):
-        """
-        Backpropagate F_t along path (Algorithm 2, line 8).
+    def _backprop(self, path: List[DecMCTSNode], F_t: float) -> None:
+        path_ids = {id(n) for n in path}
 
-        Updates undiscounted stats (visits, cum_reward) for visited nodes only.
-
-        D-UCT requires the gamma decay to be applied to ALL nodes every iteration,
-        not just the visited path. Nodes on the path get visited=True (adds 1 and F_t
-        on top of the decay); every other node gets visited=False (decay only). This
-        is what makes D-UCT properly de-emphasize stale statistics over time.
-        """
-        path_set = set(id(n) for n in path)
-
-        # Collect every node in the tree via DFS
-        all_nodes = []
-        self._collect_nodes(self.root, all_nodes)
-
-        for node in all_nodes:
-            on_path = id(node) in path_set
+        for node in self._all_nodes:
+            on_path = id(node) in path_ids
             if on_path:
-                node.visits     += 1
+                node.visits += 1
                 node.cum_reward += F_t
             node.update_discounted(F_t, visited=on_path, gamma=self.gamma)
 
-    # UPDATE DISTRIBUTION
-    def _update_sample_space(self):
-        """
-        Select X̂^r_n as the num_seq nodes with highest disc_q in tree.
-        Resets q^r_n to uniform when X̂ changes.
-        """
-        candidates = []
-        self._collect_nodes(self.root, candidates)
-
-        # Sort by discounted Q descending, take top num_seq (exclude root)
-        candidates.sort(key=lambda n: n.disc_q(), reverse=True)
-        new_X_hat = [
-            tuple(n.action_sequence)
-            for n in candidates
-            if n.action_sequence   # exclude root (empty sequence)
-        ][:self.num_seq]
-
-        # Reset to uniform when sample space changes
-        if set(new_X_hat) != set(self.X_hat):
-            self.X_hat = new_X_hat
-            n = max(len(self.X_hat), 1)
-            self.q = {s: 1.0 / n for s in self.X_hat}
-
-    def _collect_nodes(self, node, out):
-        """DFS to collect all nodes in tree."""
+    def _collect_nodes(self, node: DecMCTSNode, out: List[DecMCTSNode]) -> None:
         out.append(node)
         for child in node.children:
             self._collect_nodes(child, out)
 
-    def _update_distribution(self):
-        """
-        Gradient descent on product distribution q^r_n.
+    # -------------------------------------------------------------------------
+    # Product-distribution update
+    # -------------------------------------------------------------------------
 
-        For each x^r ∈ X̂^r_n:
-            q  <-  q - alpha * q * ( (E[f^r] - E[f^r | x^r]) / beta  +  H(q)  +  ln(q) )
-        then normalize.
-
-        This is the mirror descent / natural gradient step.
+    def _update_sample_space(self) -> None:
         """
+        Select X_hat as the num_seq best full rollout-completed sequences.
+
+        If diverse_sample_space is True, guarantees at least one representative
+        per root action before filling the rest by global disc_q ranking.
+        """
+        candidates = []
+        self._collect_nodes(self.root, candidates)
+
+        candidates = [n for n in candidates if n.representative_sequence is not None]
+        if not candidates:
+            return
+
+        candidates.sort(key=lambda n: n.disc_q(), reverse=True)
+
+        new_X_hat = []
+        seen = set()
+
+        if self.diverse_sample_space:
+            # Include the best sequence for each root action first.
+            by_root_action = {}
+            for n in candidates:
+                seq = tuple(n.representative_sequence)
+                if not seq:
+                    continue
+                a0 = seq[0]
+                if a0 not in by_root_action:
+                    by_root_action[a0] = seq
+
+            for seq in by_root_action.values():
+                if seq not in seen:
+                    new_X_hat.append(seq)
+                    seen.add(seq)
+
+        # Fill with globally best candidates.
+        for n in candidates:
+            if len(new_X_hat) >= self.num_seq:
+                break
+            seq = tuple(n.representative_sequence)
+            if not seq or seq in seen:
+                continue
+            new_X_hat.append(seq)
+            seen.add(seq)
+
+        if not new_X_hat:
+            return
+
+        if set(new_X_hat) != set(self.X_hat):
+            self.X_hat = new_X_hat
+            self.q = {seq: 1.0 / len(new_X_hat) for seq in new_X_hat}
+            self.beta = self.beta_init
+
+    def _update_distribution(self) -> None:
         if not self.X_hat:
             return
 
-        # Estimate E_{q_n}[f^r]
         E_f = self._estimate_expectation(fixed_xr=None)
-
-        # Entropy H(q^r_n)
         H = -sum(p * math.log(p) for p in self.q.values() if p > 0)
 
-        new_q = {}
+        new_q: Dict[ActionSeq, float] = {}
+        denom = self.max_reward - self.min_reward
+        beta = max(self.beta, 1e-9)
+
         for xr_tup in self.X_hat:
-            # E_{q_n}[f^r | x^r]  (Algorithm 3, line 4)
             E_f_given_xr = self._estimate_expectation(fixed_xr=xr_tup)
-
             q_val = self.q.get(xr_tup, 1.0 / len(self.X_hat))
-            ln_q  = math.log(q_val) if q_val > 1e-12 else -100.0
+            ln_q = math.log(max(q_val, 1e-12))
 
-            # Algorithm 3 line 5 -- first order additive approximation for compute purposes
+            if denom > 0:
+                norm_E_f = (E_f - self.min_reward) / denom
+                norm_E_f_given = (E_f_given_xr - self.min_reward) / denom
+            else:
+                norm_E_f = 0.5
+                norm_E_f_given = 0.5
+
+            # Algorithm 3 additive first-order update.
             delta = self.alpha * q_val * (
-                (E_f - E_f_given_xr) / self.beta  +  H  +  ln_q
+                (norm_E_f - norm_E_f_given) / beta + H + ln_q
             )
             new_q[xr_tup] = max(1e-12, q_val - delta)
 
-        # Normalize
-        total = sum(new_q.values())
-        if total > 0:
-            self.q = {k: v / total for k, v in new_q.items()}
-        else:
-            n = len(self.X_hat)
-            self.q = {k: 1.0 / n for k in self.X_hat}
+        self.q = self._normalize(new_q)
 
-    def _estimate_expectation(self, fixed_xr=None):
-        """
-        MC estimate of E_{q_n}[f^r] or E_{q_n}[f^r | x^r = fixed_xr].
-
-        Sample from joint distribution and average.
-        """
+    def _estimate_expectation(self, fixed_xr: Optional[ActionSeq] = None) -> float:
         total = 0.0
         for _ in range(self.num_samples):
-            xr      = list(fixed_xr) if fixed_xr is not None else self._sample_own()
+            xr = list(fixed_xr) if fixed_xr is not None else self._sample_own()
             x_others = self._sample_others()
-            joint   = {**x_others, self.robot_id: xr}
-            total  += self.local_utility_fn(joint)
+            joint = {**x_others, self.robot_id: xr}
+            total += float(self.local_utility_fn(joint))
         return total / self.num_samples
 
-    def _sample_own(self):
-        """Sample x^r from own distribution q^r_n."""
-        return list(self._sample_from_dist(self.q))
+    def _sample_own(self) -> List[Action]:
+        return list(self._sample_from_dist(self.q, self.robot_id))
 
-    def _sample_others(self):
-        """Sample x^(r) from each other robot's received distribution."""
+    def _sample_others(self) -> JointSequences:
         return {
-            r: list(self._sample_from_dist(self.received_dists[r]))
-            for r in self.robot_ids if r != self.robot_id
+            r: list(self._sample_from_dist(self.received_dists.get(r, {}), r))
+            for r in self.robot_ids
+            if r != self.robot_id
         }
 
-    @staticmethod
-    def _sample_from_dist(dist):
-        """
-        Sample a sequence tuple from a {tuple: prob} dict.
-        Returns [] (empty sequence) if distribution is empty — default policy.
-        """
+    def _sample_from_dist(self, dist: Dict[ActionSeq, float], robot_id: RobotID) -> ActionSeq:
         if not dist:
-            return []
-        keys  = list(dist.keys())
+            if self.default_sequence_fn is not None:
+                return tuple(self.default_sequence_fn(robot_id))
+            return tuple()
+
+        keys = list(dist.keys())
         probs = list(dist.values())
         total = sum(probs)
         if total <= 0:
-            return random.choice(keys)
-        probs = [p / total for p in probs]
+            return self.rng.choice(keys)
 
-        # Manual categorical sample (no numpy dependency)
-        r   = random.random()
+        r = self.rng.random() * total
         cum = 0.0
         for key, p in zip(keys, probs):
             cum += p
@@ -439,14 +527,17 @@ class DecMCTS:
                 return key
         return keys[-1]
 
-    # FALLBACK: GREEDY TREE EXTRACTION
-    def _greedy_tree_sequence(self):
-        """
-        Extract best sequence by greedy Q-value descent through tree.
-        Used when distribution is empty (before first sample space is built).
-        """
+    @staticmethod
+    def _normalize(dist: Dict[ActionSeq, float]) -> Dict[ActionSeq, float]:
+        total = sum(max(0.0, v) for v in dist.values())
+        if total <= 0:
+            n = max(len(dist), 1)
+            return {k: 1.0 / n for k in dist}
+        return {k: max(0.0, v) / total for k, v in dist.items()}
+
+    def _greedy_tree_sequence(self) -> List[Action]:
         node = self.root
-        seq  = []
+        seq: List[Action] = []
         while node.children:
             visited = [c for c in node.children if c.visits > 0]
             if not visited:
@@ -457,50 +548,37 @@ class DecMCTS:
         return seq
 
 
-# PART 3 — MULTI-ROBOT RUNNER
 class DecMCTSTeam:
     """
-    Convenience wrapper that runs Dec-MCTS for a team of robots,
-    handles the communication phase and exposes per-round metrics.
+    Convenience wrapper for synchronous simulation of a Dec-MCTS team.
 
+    The paper's algorithm is decentralized/asynchronous; this wrapper is just for
+    reproducible experiments in one process.
     """
 
-    def __init__(self, planners: dict):
-        """
-        planners : {robot_id: DecMCTS}  — one planner per robot
-
-        """
+    def __init__(self, planners: Dict[RobotID, DecMCTS]):
         self.planners = planners
 
-    def iterate_and_communicate(self, n_outer=1, comm_period=1):
-        """
-        Run n_outer outer iterations for all robots, broadcasting
-        distributions every comm_period outer iterations.
-
-        comm_period=1  : communicate after every outer iteration (default)
-        comm_period=K  : communicate once every K outer iterations
-        comm_period=-1 : never communicate (fully decentralized / no comms)
-        """
+    def iterate_and_communicate(self, n_outer: int = 1, comm_period: int = 1) -> None:
         for i in range(1, n_outer + 1):
-            for p in self.planners.values():
-                p.iterate(1)
+            for planner in self.planners.values():
+                planner.iterate(1)
 
             if comm_period > 0 and i % comm_period == 0:
                 for rid, planner in self.planners.items():
-                    _, q = planner.get_distribution()
+                    _X, q = planner.get_distribution()
                     for other_id, other_planner in self.planners.items():
                         if other_id != rid:
                             other_planner.receive_dist_dict(rid, q)
 
-    def best_sequences(self):
-        """Return {robot_id: action_sequence} for all robots."""
+    def best_sequences(self) -> Dict[RobotID, List[Action]]:
         return {rid: p.best_action_sequence() for rid, p in self.planners.items()}
 
-    def entropies(self):
-        """Return {robot_id: H(q^r_n)} — useful for convergence monitoring."""
-        result = {}
-        for rid, p in self.planners.items():
-            probs    = list(p.q.values())
-            H        = -sum(pr * math.log(pr) for pr in probs if pr > 0)
-            result[rid] = H
-        return result
+    def best_actions(self) -> Dict[RobotID, Optional[Action]]:
+        return {rid: p.best_action() for rid, p in self.planners.items()}
+
+    def entropies(self) -> Dict[RobotID, float]:
+        out = {}
+        for rid, planner in self.planners.items():
+            out[rid] = -sum(p * math.log(p) for p in planner.q.values() if p > 0)
+        return out

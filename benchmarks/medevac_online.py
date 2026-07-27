@@ -870,19 +870,20 @@ def run_obs_planning_step(
             print(f"DEBUG obs root edges {rid}: {obs_root_edge_stats(planner)}", flush=True)
             print(f"DEBUG obs policy support {rid}: {obs_policy_support_debug(planner)}", flush=True)
 
-    # policies = team.best_policies()
-    # raw_actions = team.best_actions()
-
-    ## REMOVE/CHANGE
     policies = team.best_policies()
     raw_actions = team.best_actions(source=args.action_source)
 
-    debug_actions = {
-        "tree": team.best_actions(source="tree"),
-        "disc_tree": team.best_actions(source="disc_tree"),
-        "policy": team.best_actions(source="policy"),
-        "visits": team.best_actions(source="visits"),
-    }
+    # Only computed under --debug-obs: each extra source re-extracts actions for
+    # every planner. ObsDecMCTS implements a subset of the belief planner's
+    # extraction rules, so ask it only for the ones it supports.
+    debug_actions = (
+        {
+            source: team.best_actions(source=source)
+            for source in ObsDecMCTS.SUPPORTED_ACTION_SOURCES
+        }
+        if getattr(args, "debug_obs", False)
+        else {}
+    )
 
     actions = {}
     for rid in range(N_AGENTS):
@@ -960,12 +961,16 @@ def run_belief_obs_planning_step(
     policies = team.best_policies()
     raw_actions = team.best_actions(beliefs=beliefs, source=args.action_source)
 
-    debug_actions = {
-        "tree": team.best_actions(beliefs=beliefs, source="tree"),
-        "disc_tree": team.best_actions(beliefs=beliefs, source="disc_tree"),
-        "policy": team.best_actions(beliefs=beliefs, source="policy"),
-        "visits": team.best_actions(beliefs=beliefs, source="visits"),
-    }
+    # Only computed under --debug-obs: each extra source re-extracts actions for
+    # every planner.
+    debug_actions = (
+        {
+            source: team.best_actions(beliefs=beliefs, source=source)
+            for source in ("tree", "disc_tree", "policy", "visits")
+        }
+        if getattr(args, "debug_obs", False)
+        else {}
+    )
 
     actions = {}
     for rid in range(N_AGENTS):
@@ -1154,17 +1159,17 @@ def simulate_online_episode(
             print(f"    executed0_from_{args.action_source}={ACTION_NAME[int(raw_actions[0])]}")
             print(f"    executed1_from_{args.action_source}={ACTION_NAME[int(raw_actions[1])]}")
 
-            # REMOVE
-            print(
-                "    action_sources="
-                + str({
-                    name: (
-                        ACTION_NAME[int(acts[0])],
-                        ACTION_NAME[int(acts[1])],
-                    )
-                    for name, acts in debug_actions.items()
-                })
-            )
+            if debug_actions:
+                print(
+                    "    action_sources="
+                    + str({
+                        name: (
+                            ACTION_NAME[int(acts[0])],
+                            ACTION_NAME[int(acts[1])],
+                        )
+                        for name, acts in debug_actions.items()
+                    })
+                )
 
         true_state = next_state
 

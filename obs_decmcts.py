@@ -364,12 +364,6 @@ class ObsDecMCTS:
 
         return policy
 
-    # def best_action(self, history: History = ()) -> Action:
-    #     """
-    #     Execute action at the current local history.
-    #     Usually history=() at each fresh online replanning call.
-    #     """
-    #     return self.best_policy().action(history)
     def _find_node_for_history(self, node: ObsNode, history: History) -> Optional[ObsNode]:
         if node.history == history:
             return node
@@ -382,50 +376,29 @@ class ObsDecMCTS:
 
         return None
 
-    # def best_action(self, history: History = ()) -> Action:
-    #     node = self._find_node_for_history(self.root, history)
-    #     if node is not None and node.actions:
-    #         return max(
-    #             node.actions.values(),
-    #             key=lambda e: e.q(),
-    #         ).action
-
-    #     return self.best_policy().action(history)
+    #: Extraction rules ObsDecMCTS implements. The belief-indexed planner
+    #: additionally supports "tree", "disc_tree", "policy", and "policy_value";
+    #: ObsDecMCTS standardizes on policy_marginal and keeps visits as a
+    #: diagnostic, so any other source is an error rather than a silent fallback.
+    SUPPORTED_ACTION_SOURCES = ("policy_marginal", "visits")
 
     def best_action(self, history: History = (), source: str = "policy_marginal") -> Action:
         """
         Execute using the single ObsDecMCTS extraction rule: marginal root/local
         action mass under q over observation-conditioned policy trees.
         """
-        # TESTING: previous extraction alternatives are commented out while we
-        # standardize on policy_marginal for all ObsDecMCTS benchmarks.
-        #
-        # if source == "policy":
-        #     return self.best_policy().action(history)
-        #
-        node = self._find_node_for_history(self.root, history)
-        if source == "visits" and node is not None and node.actions:
-            return max(node.actions.values(), key=lambda e: e.visits).action
+        if source not in self.SUPPORTED_ACTION_SOURCES:
+            raise ValueError(
+                f"ObsDecMCTS does not implement action source {source!r}; "
+                f"supported: {', '.join(self.SUPPORTED_ACTION_SOURCES)}. "
+                "Use --planner belief-obs for the other extraction rules."
+            )
 
-        # TESTING: remaining previous extraction alternatives stay commented
-        # while visits is temporarily re-enabled as a diagnostic for Tiger.
-        #
-        # if node is not None and node.actions:
-        #     if source == "tree":
-        #         return max(node.actions.values(), key=lambda e: e.q()).action
-        #
-        #     if source == "disc_tree":
-        #         return max(node.actions.values(), key=lambda e: e.disc_q()).action
-        #
-        #     if source == "visits":
-        #         return max(node.actions.values(), key=lambda e: e.visits).action
-        #
-        #     if source == "policy_value":
-        #         return self.best_policy_by_value().action(history)
-        #
-        #     raise ValueError(f"Unknown action source: {source}")
-        #
-        # return self.best_policy().action(history)
+        if source == "visits":
+            node = self._find_node_for_history(self.root, history)
+            if node is not None and node.actions:
+                return max(node.actions.values(), key=lambda e: e.visits).action
+
         return self._best_action_by_policy_marginal(history)
 
     def _best_action_by_policy_marginal(self, history: History = ()) -> Action:
@@ -445,10 +418,9 @@ class ObsDecMCTS:
         top_action, top_mass = ranked[0]
         second_mass = ranked[1][1] if len(ranked) > 1 else 0.0
 
-        # TESTING: old direct marginal argmax, too sensitive when top masses are
-        # separated only by Monte Carlo noise.
-        #
-        # return top_action
+        # A direct argmax over the marginal is too sensitive when the top masses
+        # differ only by Monte Carlo noise, so ties within action_margin are
+        # broken below rather than taken at face value.
         if top_mass - second_mass >= self.action_margin:
             return top_action
 
@@ -485,86 +457,9 @@ class ObsDecMCTS:
 
         return fallback_action
 
-    # def best_action(self, history: History = (), source: str = "tree") -> Action:
-    #     # return self.best_policy().action(history)
-    #     return max(node.actions.values(), key=lambda e: e.q()).action
-
     # ------------------------------------------------------------------
     # Tree growth
     # ------------------------------------------------------------------
-
-    # def _grow_tree_once(self) -> None:
-    #     state = self.model.sample_state_from_belief(self.root_belief, self.rng)
-
-    #     own_policy = PolicyTree(default_action_fn=self.default_action_fn)
-    #     other_policies = self._sample_other_policies()
-
-    #     visited_edges: List[ObsActionEdge] = []
-    #     visited_nodes: List[ObsNode] = []
-
-    #     total_return = self._simulate_from_node(
-    #         node=self.root,
-    #         state=state,
-    #         histories={rid: () for rid in self.robot_ids},
-    #         own_policy=own_policy,
-    #         other_policies=other_policies,
-    #         visited_nodes=visited_nodes,
-    #         visited_edges=visited_edges,
-    #         depth=0,
-    #     )
-
-    #     self.min_reward = min(self.min_reward, total_return)
-    #     self.max_reward = max(self.max_reward, total_return)
-
-    #     # Visited edges
-    #     visited_edge_ids = {id(e) for e in visited_edges}
-    #     all_edges: List[ObsActionEdge] = []
-    #     self._collect_edges(self.root, all_edges)
-
-    #     for edge in all_edges:
-    #         on_path = id(edge) in visited_edge_ids
-
-    #         if on_path:
-    #             edge.visits += 1
-    #             edge.value_sum += total_return
-            
-    #         edge.update_discounted(total_return, visited=on_path, gamma=self.gamma)
-
-    #     # for node in visited_nodes:
-    #     #     node.visits += 1
-    #     #     node.value_sum += total_return
-
-    #     #     if total_return > node.representative_reward:
-    #     #         node.representative_reward = total_return
-    #     #         node.representative_policy = own_policy.key()
-
-    #     # visited_edge_ids = {id(e) for e in visited_edges}
-    #     # all_edges: List[ObsActionEdge] = []
-    #     # self._collect_edges(self.root, all_edges)
-
-    #     # for edge in all_edges:
-    #     #     on_path = id(edge) in visited_edge_ids
-    #     #     if on_path:
-    #     #         edge.visits += 1
-    #     #         edge.value_sum += total_return
-    #     #     edge.update_discounted(total_return, visited=on_path, gamma=self.gamma)
-
-    #     visited_node_ids = {id(n) for n in visited_nodes}
-    #     all_nodes: List[ObsNode] = []
-    #     self._collect_nodes(self.root, all_nodes)
-
-    #     for node in all_nodes:
-    #         on_path = id(node) in visited_node_ids
-
-    #         if on_path:
-    #             node.visits += 1
-    #             node.value_sum += total_return
-
-    #             if total_return > node.representative_reward:
-    #                 node.representative_reward = total_return
-    #                 node.representative_policy = own_policy.key()
-
-    #         node.update_discounted(total_return, visited=on_path, gamma=self.gamma)
 
     def _grow_tree_once(self) -> None:
         state = self.model.sample_state_from_belief(self.root_belief, self.rng)
@@ -614,19 +509,6 @@ class ObsDecMCTS:
             node.disc_reward += total_return
 
         self._completed_sims = t
-    
-    # REMOVE ONCE FIXED
-    def obs_root_edge_stats(planner):
-        out = {}
-        for a, edge in planner.root.actions.items():
-            out[ACTION_NAME[a]] = {
-                "visits": edge.visits,
-                "q": round(edge.q(), 3),
-                "disc_visits": round(edge.disc_visits, 3),
-                "disc_q": round(edge.disc_q(), 3),
-                "num_obs_children": len(edge.obs_children),
-            }
-        return out
 
     def _simulate_from_node(
         self,
@@ -720,12 +602,10 @@ class ObsDecMCTS:
 
     def _select_or_expand_action(self, node: ObsNode) -> Action:
         if node.untried_actions:
-            # TESTING: previous behavior expanded a uniformly random untried
-            # action. That is formally generic, but it wastes short online
-            # budgets at newly reached observation nodes where the benchmark
-            # already provides an observation-conditioned default policy.
-            #
-            # action = self.rng.choice(node.untried_actions)
+            # Expanding a uniformly random untried action is formally generic
+            # but wastes short online budgets at newly reached observation
+            # nodes, where the benchmark already supplies an
+            # observation-conditioned default policy. Prefer that default.
             default_action = (
                 self.default_action_fn(node.history)
                 if self.prefer_default_expansion
@@ -879,8 +759,7 @@ class ObsDecMCTS:
             weights[key] = math.exp(normalized_score / temperature)
 
         return self._normalize(weights)
-    
-    # CHECK REMOVE
+
     def _score_policy_key(self, key: PolicyKey, n_eval: int = 5) -> float:
         total = 0.0
 
@@ -1207,19 +1086,10 @@ class ObsDecMCTSTeam:
             for rid, planner in self.planners.items()
         }
 
-    # def best_actions(self, histories: Optional[Dict[RobotID, History]] = None) -> Dict[RobotID, Action]:
-    #     histories = histories or {rid: () for rid in self.planners}
-
-    #     return {
-    #         rid: planner.best_action(histories.get(rid, ()))
-    #         for rid, planner in self.planners.items()
-    #     }
-
-    # REMOVE/CHANGE
     def best_actions(
         self,
         histories: Optional[Dict[RobotID, History]] = None,
-        source: str = "tree",
+        source: str = "policy_marginal",
     ) -> Dict[RobotID, Action]:
         histories = histories or {rid: () for rid in self.planners}
 

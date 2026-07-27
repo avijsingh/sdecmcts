@@ -17,6 +17,8 @@ def test_semidec_tiger_batch_runs_and_returns_numbers():
         gamma=1.0,
         qmdp_leaf=False,
         guide="exact",
+        min_edge_visits=1,
+        max_tree_depth=0,
     )
 
     returns = semidec_tiger.run_batch(args)

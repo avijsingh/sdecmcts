@@ -868,23 +868,17 @@ def make_obs_default_action_fn(
     remaining_horizon: int,
     fallback: int,
 ):
-    # TESTING: previous obs default used the QMDP root action only at history
-    # () and then returned fallback for every deeper observation history.
-    #
-    # root_default = qmdp_local_action(root_belief, rid, model, remaining_horizon)
     action_cache: Dict[Any, int] = {}
 
     def default_action(history) -> int:
-        # TESTING:
-        # return root_default if history == () else fallback
         if history in action_cache:
             return action_cache[history]
 
         if len(history) > 1:
-            # TESTING: full history-conditioned QMDP defaults at every rollout
-            # depth are expensive because sampled observation histories rarely
-            # repeat. Preserve the first observation-conditioned branch and use
-            # the configured cheap fallback deeper in rollouts.
+            # Full history-conditioned QMDP defaults at every rollout depth are
+            # expensive because sampled observation histories rarely repeat.
+            # Keep the first observation-conditioned branch and fall back to the
+            # configured cheap action deeper in rollouts.
             action_cache[history] = fallback
             return fallback
 

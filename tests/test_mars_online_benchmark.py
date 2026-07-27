@@ -103,7 +103,9 @@ def test_tiny_obs_decmcts_episode_smoke():
         qmdp_legal_belief="average",
         qmdp_average_weight=0.0,
         heuristic_expansion=True,
-        action_source="tree",
+        # ObsDecMCTS only implements policy_marginal and visits; "tree" used to
+        # fall through to policy_marginal silently.
+        action_source="policy_marginal",
         seed=7,
         debug_obs=False,
     )

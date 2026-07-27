@@ -661,78 +661,6 @@ def run_planning_step(
 
     return actions, raw_actions, sequences, team.entropies(), root_masses
 
-# def run_obs_planning_step(
-#     beliefs: Dict[int, List[float]],
-#     remaining_horizon: int,
-#     model: TigerModel,
-#     args,
-#     seed: int,
-# ):
-#     """
-#     Observation-conditioned Dec-MCTS planning step.
-
-#     Unlike run_planning_step(), this planner searches over partial policy trees:
-#         local action-observation history -> action
-
-#     The returned action is the action at root local history ().
-#     """
-#     planners = {}
-#     adapter = TigerObsModelAdapter(model)
-
-#     for rid in range(N_AGENTS):
-#         planners[rid] = ObsDecMCTS(
-#             robot_id=rid,
-#             robot_ids=[0, 1],
-#             root_belief=beliefs[rid],
-#             model=adapter,
-#             legal_actions_fn=tiger_legal_actions_from_history,
-#             default_action_fn=tiger_default_action_from_history,
-#             gamma=args.gamma,
-#             cp=args.cp,
-#             horizon=remaining_horizon,
-#             tau=args.tau,
-#             num_policies=args.num_seq,
-#             num_samples=args.num_samples,
-#             beta_init=args.beta_init,
-#             beta_decay=args.beta_decay,
-#             alpha=args.alpha,
-#             seed=seed + 1009 * rid,
-#         )
-    
-#     # REMOVE
-#     for rid, planner in planners.items():
-#         print("DEBUG obs root edges", rid, ObsDecMCTS.obs_root_edge_stats(planner))
-
-#     team = ObsDecMCTSTeam(planners)
-#     team.iterate_and_communicate(
-#         n_outer=args.outer_iters,
-#         comm_period=args.comm_period,
-#     )
-
-#     raw_actions = {}
-#     actions = {}
-#     policies = team.best_policies()
-
-#     for rid in range(N_AGENTS):
-#         raw_a = int(planners[rid].best_action(history=()))
-#         raw_actions[rid] = raw_a
-
-#         if getattr(args, "guard_actions", False):
-#             actions[rid] = guard_tiger_action(
-#                 belief=beliefs[rid],
-#                 proposed_action=raw_a,
-#                 open_threshold=args.open_threshold,
-#                 force_open_when_confident=getattr(args, "force_open_when_confident", False),
-#             )
-#         else:
-#             actions[rid] = raw_a
-
-#     root_masses = {
-#         rid: obs_root_action_masses(planner)
-#         for rid, planner in planners.items()
-#     }
-
-#     return actions, raw_actions, policies, team.entropies(), root_masses
 def obs_root_edge_stats(planner):
     out = {}
     for a, edge in planner.root.actions.items():
@@ -802,11 +730,9 @@ def run_obs_planning_step(
             beta_init=args.beta_init,
             beta_decay=args.beta_decay,
             alpha=args.alpha,
-            # TESTING: shared seeds can make both decentralized planners sample
-            # highly correlated supports. Restore per-robot offsets while
-            # keeping episode-level determinism.
-            #
-            # seed=seed,
+            # Per-robot offset, not a shared seed: sharing one seed makes both
+            # decentralized planners sample highly correlated supports. The
+            # offset keeps episode-level determinism.
             seed=seed + 1009 * rid,
         )
 

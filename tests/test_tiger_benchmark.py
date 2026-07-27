@@ -116,8 +116,9 @@ def test_local_belief_update_single_hear_left_from_uniform():
     post0 = tiger.update_local_belief(prior, joint_a, hear_left, 0, model)
     post1 = tiger.update_local_belief(prior, joint_a, hear_left, 1, model)
 
-    assert_belief_close(post0, [0.75, 0.25])
-    assert_belief_close(post1, [0.75, 0.25])
+    # Listening accuracy is 0.85: 0.5*0.85 / (0.5*0.85 + 0.5*0.15) = 0.85.
+    assert_belief_close(post0, [0.85, 0.15])
+    assert_belief_close(post1, [0.85, 0.15])
 
 
 def test_joint_belief_update_two_matching_observations():
@@ -129,7 +130,9 @@ def test_joint_belief_update_two_matching_observations():
 
     post = tiger.update_joint_belief(prior, joint_a, joint_o, model)
 
-    assert_belief_close(post, [0.9, 0.1])
+    # Two independent 0.85-accurate observations: 0.85^2 / (0.85^2 + 0.15^2).
+    assert_belief_close(post, [0.85 ** 2 / (0.85 ** 2 + 0.15 ** 2),
+                               0.15 ** 2 / (0.85 ** 2 + 0.15 ** 2)])
 
 
 def test_joint_belief_update_conflicting_observations_stays_uniform():

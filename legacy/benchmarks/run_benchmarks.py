@@ -37,17 +37,20 @@ import time
 import random
 import argparse
 
-# Allow importing from Scripts/
+# Allow importing legacy/ (cenmcts, sdecmcts) and this directory's own domain
+# modules. The latter are imported as bare names rather than as benchmarks.*
+# because the live top-level benchmarks/ package shadows this one.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cenmcts  import CenMCTS
 from decmcts  import DecMCTS, DecMCTSTeam
 from sdecmcts import SDecMCTS, CommGraph
 
-from benchmarks.tiger    import make_tiger_benchmark
-from benchmarks.mars     import make_mars_benchmark
-from benchmarks.medevac  import make_medevac_benchmark
-from benchmarks.labyrinth import make_labyrinth_benchmark
+from tiger     import make_tiger_benchmark
+from mars      import make_mars_benchmark
+from medevac   import make_medevac_benchmark
+from labyrinth import make_labyrinth_benchmark
 
 
 # ── DEFAULTS ──────────────────────────────────────────────────────────────────
